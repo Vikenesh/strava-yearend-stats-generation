@@ -264,8 +264,8 @@ def index():
                 }
                 
                 @keyframes glow {
-                    from { text-shadow: 3px 3px 6px rgba(0,0,0,0,0.3); }
-                    to { text-shadow: 3px 3px 20px rgba(255,255,255,255,0.5); }
+                    from {{ text-shadow: 3px 3px 6px rgba(0,0,0,0.3); }}
+                    to {{ text-shadow: 3px 3px 20px rgba(255,255,255,0.5); }}
                 }
                 
                 .title {
@@ -308,8 +308,8 @@ def index():
                 }
                 
                 @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
+                    from {{ transform: rotate(0deg); }}
+                    to {{ transform: rotate(360deg); }}
                 }
                 
                 .confetti {
@@ -320,19 +320,19 @@ def index():
                     animation: fall 3s linear infinite;
                 }
                 
-                .confetti:nth-child(1) { left: 10%; animation-delay: 0s; background: #ff6b6b; }
-                .confetti:nth-child(2) { left: 20%; animation-delay: 0.5s; background: #4ecdc4; }
-                .confetti:nth-child(3) { left: 30%; animation-delay: 1s; background: #45b7d1; }
-                .confetti:nth-child(4) { left: 40%; animation-delay: 1.5s; background: #f9ca24; }
-                .confetti:nth-child(5) { left: 50%; animation-delay: 2s; background: #f4d03f; }
-                .confetti:nth-child(6) { left: 60%; animation-delay: 2.5s; background: #6c5ce7; }
-                .confetti:nth-child(7) { left: 70%; animation-delay: 0.3s; background: #a8e6cf; }
-                .confetti:nth-child(8) { left: 80%; animation-delay: 0.8s; background: #ffd700; }
-                .confetti:nth-child(9) { left: 90%; animation-delay: 1.3s; background: #ff69b4; }
+                .confetti:nth-child(1) {{ left: 10%; animation-delay: 0s; background: #ff6b6b; }}
+                .confetti:nth-child(2) {{ left: 20%; animation-delay: 0.5s; background: #4ecdc4; }}
+                .confetti:nth-child(3) {{ left: 30%; animation-delay: 1s; background: #45b7d1; }}
+                .confetti:nth-child(4) {{ left: 40%; animation-delay: 1.5s; background: #f9ca24; }}
+                .confetti:nth-child(5) {{ left: 50%; animation-delay: 2s; background: #f4d03f; }}
+                .confetti:nth-child(6) {{ left: 60%; animation-delay: 2.5s; background: #6c5ce7; }}
+                .confetti:nth-child(7) {{ left: 70%; animation-delay: 0.3s; background: #a8e6cf; }}
+                .confetti:nth-child(8) {{ left: 80%; animation-delay: 0.8s; background: #ffd700; }}
+                .confetti:nth-child(9) {{ left: 90%; animation-delay: 1.3s; background: #ff69b4; }}
                 
                 @keyframes fall {
-                    0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
-                    100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+                    0% {{ transform: translateY(-100vh) rotate(0deg); opacity: 1; }}
+                    100% {{ transform: translateY(100vh) rotate(360deg); opacity: 0; }}
                 }
                 
                 .features {
