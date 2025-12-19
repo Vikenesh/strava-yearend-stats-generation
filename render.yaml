@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: strava-year-end-summary
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: STRAVA_CLIENT_ID
+        sync: false
+      - key: STRAVA_CLIENT_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REDIRECT_URI
+        value: https://strava-year-end-summary.onrender.com/callback
