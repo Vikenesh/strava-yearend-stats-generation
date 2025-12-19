@@ -126,7 +126,11 @@ def get_all_activities(token):
             print(f"Error fetching page {page}: {response.status_code}")
             break
             
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"Error parsing JSON: {e}")
+            break
         
         if not data:  # No more activities
             print(f"Fetched {len(all_activities)} total activities from {page-1} pages")
@@ -137,8 +141,8 @@ def get_all_activities(token):
         page += 1
         
         # Safety check to prevent infinite loops
-        if page > 100:  # Strava typically limits to around 30-50 pages max
-            print("Reached safety limit of 100 pages")
+        if page > 10:
+            print("Safety limit reached, stopping fetch")
             break
     
     return all_activities
@@ -383,7 +387,7 @@ def login():
     print(f"DEBUG: Login route accessed")
     print(f"DEBUG: CLIENT_ID = {CLIENT_ID}")
     print(f"DEBUG: REDIRECT_URI = {REDIRECT_URI}")
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read&approval_prompt=force'
+    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
     print(f"DEBUG: Full auth URL = {auth_url}")
     print(f"DEBUG: Redirecting to Strava OAuth...")
     return redirect(auth_url)
