@@ -527,22 +527,21 @@ def get_stats_page():
             
             table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance:.2f}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
         
-        try:
-            return f"""
+        html_content = """
         <!DOCTYPE html>
         <html>
         <head>
             <title>Strava Year-End Running Summary - 2025</title>
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-                .copy-btn {{ background: #4CAF50; color: white; padding: 10px; cursor: pointer; margin: 10px 0; border: none; border-radius: 4px; }}
-                .copy-btn:hover {{ background: #45a049; }}
-                .stats {{ background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 5px; }}
-                .header {{ display: flex; justify-content: space-between; align-items: center; }}
-                .title {{ color: #FC4C02; }}
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .copy-btn { background: #4CAF50; color: white; padding: 10px; cursor: pointer; margin: 10px 0; border: none; border-radius: 4px; }
+                .copy-btn:hover { background: #45a049; }
+                .stats { background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 5px; }
+                .header { display: flex; justify-content: space-between; align-items: center; }
+                .title { color: #FC4C02; }
             </style>
         </head>
         <body>
@@ -667,7 +666,15 @@ ${data}"
             </script>
         </body>
         </html>
-        """
+        """.format(
+            athlete_name=athlete_name,
+            activities=activities,
+            runs_2025=runs_2025,
+            table_rows=table_rows
+        )
+        
+        return html_content
+        
     except Exception as e:
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
 
