@@ -228,10 +228,14 @@ def login():
     print(f"DEBUG: Login route accessed")
     print(f"DEBUG: CLIENT_ID = {CLIENT_ID}")
     print(f"DEBUG: REDIRECT_URI = {REDIRECT_URI}")
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read'
+    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
     print(f"DEBUG: Full auth URL = {auth_url}")
     print(f"DEBUG: Redirecting to Strava OAuth...")
     return redirect(auth_url)
+
+@app.route('/test')
+def test():
+    return "Test route is working!"
 
 @app.route('/callback')
 def callback():
