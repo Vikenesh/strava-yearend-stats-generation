@@ -436,6 +436,52 @@ def callback():
     
     return redirect('/')
 
+@app.route('/callback/')
+def callback_with_slash():
+    print(f"DEBUG: Callback with slash route accessed")
+    return "Callback with slash works!"
+    print(f"DEBUG: Callback route accessed")
+    print(f"DEBUG: Request args: {dict(request.args)}")
+    
+    code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        print(f"DEBUG: OAuth error: {error}")
+        return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
+    
+    if not code:
+        print(f"DEBUG: No authorization code received")
+        return '<h1>Error</h1><p>No authorization code received</p><p><a href="/">Back to home</a></p>'
+    
+    print(f"DEBUG: Received authorization code: {code[:10]}...")
+    
+    token_data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'code': code,
+        'grant_type': 'authorization_code'
+    }
+    
+    print(f"DEBUG: Requesting access token...")
+    response = requests.post('https://www.strava.com/oauth/token', data=token_data)
+    
+    print(f"DEBUG: Token response status: {response.status_code}")
+    print(f"DEBUG: Token response: {response.text[:200]}...")
+    
+    if response.status_code != 200:
+        print(f"DEBUG: Token exchange failed")
+        return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p><p><a href="/">Back to home</a></p>'
+    
+    token_response = response.json()
+    session['access_token'] = token_response['access_token']
+    session['athlete_info'] = token_response.get('athlete', {})
+    
+    print(f"DEBUG: Successfully obtained access token")
+    print(f"DEBUG: Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
+    
+    return redirect('/')
+
 @app.route('/logout')
 def logout():
     session.clear()
