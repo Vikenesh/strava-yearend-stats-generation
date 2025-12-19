@@ -14,7 +14,7 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-202
 # Strava API credentials from environment variables
 CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '130483')
 CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106ca532d1bc428088e')
-REDIRECT_URI = os.environ.get('REDIRECT_URI', 'https://strava-year-end-summary-production.up.railway.app/callback')
+REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
