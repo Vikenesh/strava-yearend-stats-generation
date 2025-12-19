@@ -708,5 +708,7 @@ ${data}"
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
 
 if __name__ == '__main__':
+    print("Starting Flask app...")
+    print(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
