@@ -527,7 +527,8 @@ def get_stats_page():
             
             table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance:.2f}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
         
-        return f"""
+        try:
+            return f"""
         <!DOCTYPE html>
         <html>
         <head>
