@@ -533,15 +533,15 @@ def get_stats_page():
         <head>
             <title>Strava Year-End Running Summary - 2025</title>
             <style>
-                body { font-family: Arial, sans-serif; margin: 20px; }
-                table { border-collapse: collapse; width: 100%; margin: 20px 0; }
-                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-                th { background-color: #f2f2f2; }
-                .copy-btn { background: #4CAF50; color: white; padding: 10px; cursor: pointer; margin: 10px 0; border: none; border-radius: 4px; }
-                .copy-btn:hover { background: #45a049; }
-                .stats { background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 5px; }
-                .header { display: flex; justify-content: space-between; align-items: center; }
-                .title { color: #FC4C02; }
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                th {{ background-color: #f2f2f2; }}
+                .copy-btn {{ background: #4CAF50; color: white; padding: 10px; cursor: pointer; margin: 10px 0; border: none; border-radius: 4px; }}
+                .copy-btn:hover {{ background: #45a049; }}
+                .stats {{ background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 5px; }}
+                .header {{ display: flex; justify-content: space-between; align-items: center; }}
+                .title {{ color: #FC4C02; }}
             </style>
         </head>
         <body>
