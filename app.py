@@ -220,7 +220,9 @@ def index():
 
 @app.route('/login')
 def login():
-    return redirect(f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read')
+    import urllib.parse
+    encoded_redirect = urllib.parse.quote(REDIRECT_URI)
+    return redirect(f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={encoded_redirect}&scope=read,activity:read')
 
 @app.route('/callback')
 def callback():
