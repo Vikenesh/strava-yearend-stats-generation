@@ -1270,7 +1270,7 @@ Data:
 ${{csvData}}`;
                     
                     navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
-                        alert('Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.');
+                        alert("Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.");
                     }});
                 }}
             </script>
