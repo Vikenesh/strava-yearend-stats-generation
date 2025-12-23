@@ -509,23 +509,40 @@ def get_stats_page():
         # Sort by date (newest first)
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
         
-        # Create table rows for 2025 runs only
+        # Create table rows for 2025 runs only - limit to first 50 to avoid performance issues
         table_rows = ""
-        for run in runs_2025:
-            date = run['start_date'][:10]  # Just the date part
-            name = run['name']
-            distance = run['distance'] / 1000  # Convert to km
-            time_sec = run['moving_time']
-            hours = time_sec // 3600
-            minutes = (time_sec % 3600) // 60
-            seconds = time_sec % 60
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            pace = time_sec / 60 / distance if distance > 0 else 0
-            pace_min = int(pace)
-            pace_sec = int((pace - pace_min) * 60)
-            pace_str = f"{pace_min}:{pace_sec:02d}"
-            
-            table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance:.2f}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
+        max_runs = min(50, len(runs_2025))  # Show max 50 runs
+        
+        for i, run in enumerate(runs_2025[:max_runs]):
+            try:
+                date = run.get('start_date', 'N/A')[:10] if run.get('start_date') else 'N/A'
+                name = run.get('name', 'Unknown Activity')
+                distance = round(float(run.get('distance', 0)) / 1000, 2)  # Convert to km
+                time_sec = int(run.get('moving_time', 0))
+                
+                # Simple time formatting
+                if time_sec > 0:
+                    hours = time_sec // 3600
+                    minutes = (time_sec % 3600) // 60
+                    seconds = time_sec % 60
+                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    time_str = "00:00:00"
+                
+                # Simple pace calculation
+                if distance > 0:
+                    pace_min_per_km = time_sec / 60 / distance
+                    pace_min = int(pace_min_per_km)
+                    pace_sec = int((pace_min_per_km - pace_min) * 60)
+                    pace_str = f"{pace_min}:{pace_sec:02d}"
+                else:
+                    pace_str = "N/A"
+                
+                table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
+            except Exception as e:
+                # Skip problematic rows but continue
+                table_rows += f"<tr><td>Error</td><td>Error in data</td><td>-</td><td>-</td><td>-</td></tr>"
+                continue
         
         html_content = """
         <!DOCTYPE html>
@@ -552,6 +569,7 @@ def get_stats_page():
                         <p><strong>Total Activities (All Time):</strong> {len(activities)}</p>
                         <p><strong>2025 Runs:</strong> {len(runs_2025)}</p>
                         <p><strong>Other Activities:</strong> {len(activities) - len([a for a in activities if a['type'] == 'Run'])}</p>
+                        {f'<p><em>Showing first {max_runs} of {len(runs_2025)} 2025 runs</em></p>' if len(runs_2025) > max_runs else ''}
                     </div>
                 </div>
                 <div>
