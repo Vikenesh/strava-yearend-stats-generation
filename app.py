@@ -2,11 +2,12 @@ import os
 import requests
 import json
 import logging
-from flask import Flask, request, session, redirect, url_for, jsonify, flash, render_template_string
+from flask import Flask, request, session, redirect, url_for, jsonify, flash, render_template_string, current_app
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timedelta
 import requests
 import os
 import logging
@@ -48,303 +49,383 @@ def load_user(user_id):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Strava API credentials from environment variables
-CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '130483')
-CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106ca532d1bc428088e')
-REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
+# Strava API configuration
+STRAVA_CLIENT_ID = os.getenv('STRAVA_CLIENT_ID')
+STRAVA_CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
+STRAVA_AUTHORIZE_URL = 'https://www.strava.com/oauth/authorize'
+STRAVA_TOKEN_URL = 'https://www.strava.com/oauth/token'
+STRAVA_API_BASE_URL = 'https://www.strava.com/api/v3'
+STRAVA_SCOPE = 'activity:read_all,profile:read_all'
 
-# Initialize OpenAI
-openai.api_key = os.environ.get('OPENAI_API_KEY')
+# App configuration
+APP_URL = os.getenv('APP_URL', 'http://localhost:5000')
+CALLBACK_URL = f"{APP_URL}/callback"
 
-# Create database tables
-with app.app_context():
-    db.create_all()
+# Other configuration
+MAX_ACTIVE_USERS = 10  # Maximum number of active users
+INACTIVITY_DAYS = 30   # Days of inactivity before considering a user inactive
 
-# OpenAI API settings
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
+# Define the STATS_TEMPLATE at the module level
+STATS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Your Running Stats</title>
+    <style>
+        /* Add your CSS styles here */
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        .stats-container { display: flex; justify-content: space-around; margin: 20px 0; }
+        .stat-box { text-align: center; padding: 20px; background: #f8f9fa; border-radius: 10px; }
+        .stat-value { font-size: 2rem; font-weight: bold; color: #4a5568; }
+        .stat-label { color: #718096; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background-color: #f8fafc; }
+    </style>
+</head>
+<body>
+    <h1>Welcome, {{ athlete_name }}!</h1>
+    <div class="stats-container">
+        <div class="stat-box">
+            <div class="stat-value">{{ total_runs }}</div>
+            <div class="stat-label">Total Runs</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value">{{ "%.1f"|format(total_distance) }} km</div>
+            <div class="stat-label">Total Distance</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value">{{ "%.1f"|format(total_time) }} hours</div>
+            <div class="stat-label">Total Time</div>
+        </div>
+    </div>
+    <h2>Your Runs in 2025</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Distance (km)</th>
+                <th>Time</th>
+                <th>Pace (min/km)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{ table_rows|safe }}
+        </tbody>
+    </table>
+    <p><small>Generated on {{ generated_at }}</small></p>
+</body>
+</html>
+"""
+
+def revoke_strava_access(user):
+    """Revoke Strava access for a user"""
+    try:
+        # Revoke the access token with Strava
+        revoke_url = 'https://www.strava.com/oauth/deauthorize'
+        response = requests.post(
+            revoke_url,
+            data={'access_token': user.access_token}
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"Successfully revoked Strava access for user {user.id}")
+        else:
+            logger.warning(f"Failed to revoke Strava access for user {user.id}: {response.status_code} - {response.text}")
+        
+    except Exception as e:
+        logger.error(f"Error revoking Strava access for user {user.id}: {str(e)}")
+    finally:
+        # Clear the tokens in the database
+        user.access_token = None
+        user.refresh_token = None
+        user.token_expires_at = None
+        db.session.commit()
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to IST timezone"""
     utc_dt = datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
-    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-    return ist_dt
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    return utc_dt.astimezone(ist_tz)
 
 def analyze_wrapped_stats(activities):
     """Analyze activities for wrapped-style visualization"""
-    logger.info("analyze_wrapped_stats called")
-    runs = [a for a in activities if a['type'] == 'Run']
+    if not activities:
+        return {}
     
-    if not runs:
-        logger.info("No runs found")
-        return None
-    
-    # Convert all dates to IST
-    ist_runs = []
-    for run in runs:
-        ist_dt = utc_to_ist(run['start_date'])
-        ist_run = run.copy()
-        ist_run['ist_date'] = ist_dt
-        ist_runs.append(ist_run)
-    
-    # Basic stats
-    total_distance = sum(run['distance'] for run in ist_runs) / 1000  # km
-    total_time = sum(run['moving_time'] for run in ist_runs)  # seconds
-    total_activities = len(ist_runs)
-    
-    # Monthly breakdown
-    monthly_stats = defaultdict(lambda: {'distance': 0, 'count': 0, 'time': 0})
-    for run in ist_runs:
-        month_key = run['ist_date'].strftime('%Y-%m')
-        monthly_stats[month_key]['distance'] += run['distance'] / 1000
-        monthly_stats[month_key]['count'] += 1
-        monthly_stats[month_key]['time'] += run['moving_time']
-    
-    # Fastest/Longest activities
-    fastest_run = min(ist_runs, key=lambda x: x['moving_time'] / (x['distance'] / 1000) if x['distance'] > 0 else float('inf'))
-    longest_run = max(ist_runs, key=lambda x: x['distance'])
-    
-    # Time patterns
-    early_morning_runs = [r for r in ist_runs if 5 <= r['ist_date'].hour < 9]
-    night_runs = [r for r in ist_runs if 20 <= r['ist_date'].hour or r['ist_date'].hour < 5]
-    
-    # Consistency streaks
-    dates = sorted(set(run['ist_date'].date() for run in ist_runs))
-    current_streak = 0
-    max_streak = 0
-    temp_streak = 0
-    
-    for i in range(len(dates)):
-        if i == 0:
-            temp_streak = 1
-        elif (dates[i] - dates[i-1]).days == 1:
-            temp_streak += 1
-        else:
-            max_streak = max(max_streak, temp_streak)
-            temp_streak = 1
-        max_streak = max(max_streak, temp_streak)
-    
-    # Check if current streak continues to today
-    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
-    if dates and (today - dates[-1]).days <= 1:
-        current_streak = temp_streak
-    
-    # Favorite day of week
-    day_counts = Counter(run['ist_date'].strftime('%A') for run in ist_runs)
-    favorite_day = day_counts.most_common(1)[0] if day_counts else ('None', 0)
-    
-    logger.info("Analysis completed")
-    return {
-        'total_distance': round(total_distance, 2),
-        'total_time_hours': round(total_time / 3600, 1),
-        'total_activities': total_activities,
-        'monthly_stats': dict(monthly_stats),
-        'fastest_run': {
-            'name': fastest_run['name'],
-            'pace': round((fastest_run['moving_time'] / 60) / (fastest_run['distance'] / 1000), 2),
-            'date': fastest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
-            'distance': round(fastest_run['distance'] / 1000, 2)
-        },
-        'longest_run': {
-            'name': longest_run['name'],
-            'distance': round(longest_run['distance'] / 1000, 2),
-            'date': longest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
-            'time': longest_run['moving_time'] // 60
-        },
-        'early_bird_count': len(early_morning_runs),
-        'night_owl_count': len(night_runs),
-        'current_streak': current_streak,
-        'max_streak': max_streak,
-        'favorite_day': favorite_day,
-        'avg_pace': round((total_time / 60) / total_distance, 2) if total_distance > 0 else 0,
-        'ist_runs': ist_runs
+    # Initialize stats dictionary
+    stats = {
+        'total_activities': 0,
+        'total_distance_km': 0,
+        'total_moving_time_seconds': 0,
+        'activities_by_type': {},
+        'activities_by_month': {month: 0 for month in range(1, 13)},
+        'activities_by_weekday': {day: 0 for day in range(7)},
+        'activities_by_hour': {hour: 0 for hour in range(24)},
+        'longest_run': None,
+        'fastest_run': None,
+        'monthly_stats': {month: {'distance': 0, 'count': 0} for month in range(1, 13)},
+        'weekly_stats': {day: {'distance': 0, 'count': 0} for day in range(7)},
+        'hourly_stats': {hour: {'distance': 0, 'count': 0} for hour in range(24)}
     }
+    
+    for activity in activities:
+        try:
+            # Skip if not a run
+            if activity.get('type', '').lower() != 'run':
+                continue
+                
+            # Basic activity stats
+            stats['total_activities'] += 1
+            
+            # Distance in km
+            distance_km = activity.get('distance', 0) / 1000
+            stats['total_distance_km'] += distance_km
+            
+            # Moving time in seconds
+            moving_time = activity.get('moving_time', 0)
+            stats['total_moving_time_seconds'] += moving_time
+            
+            # Activities by type
+            activity_type = activity.get('type', 'unknown').lower()
+            stats['activities_by_type'][activity_type] = stats['activities_by_type'].get(activity_type, 0) + 1
+            
+            # Parse start date
+            start_date = datetime.fromisoformat(activity.get('start_date', '').replace('Z', '+00:00'))
+            
+            # Activities by month (1-12)
+            month = start_date.month
+            stats['activities_by_month'][month] += 1
+            stats['monthly_stats'][month]['distance'] += distance_km
+            stats['monthly_stats'][month]['count'] += 1
+            
+            # Activities by weekday (0=Monday, 6=Sunday)
+            weekday = start_date.weekday()
+            stats['activities_by_weekday'][weekday] += 1
+            stats['weekly_stats'][weekday]['distance'] += distance_km
+            stats['weekly_stats'][weekday]['count'] += 1
+            
+            # Activities by hour of day
+            hour = start_date.hour
+            stats['activities_by_hour'][hour] += 1
+            stats['hourly_stats'][hour]['distance'] += distance_km
+            stats['hourly_stats'][hour]['count'] += 1
+            
+            # Track longest run
+            if stats['longest_run'] is None or distance_km > stats['longest_run'].get('distance_km', 0):
+                stats['longest_run'] = {
+                    'name': activity.get('name', 'Unnamed Run'),
+                    'distance_km': distance_km,
+                    'date': start_date.strftime('%Y-%m-%d'),
+                    'id': activity.get('id')
+                }
+            
+            # Track fastest run (by average speed)
+            avg_speed = activity.get('average_speed', 0)  # meters per second
+            if avg_speed > 0:  # Only consider runs with valid speed
+                pace_seconds_per_km = 1000 / avg_speed  # seconds per kilometer
+                pace_min_per_km = pace_seconds_per_km / 60  # minutes per kilometer
+                
+                if stats['fastest_run'] is None or pace_min_per_km < stats['fastest_run'].get('pace_min_per_km', float('inf')):
+                    stats['fastest_run'] = {
+                        'name': activity.get('name', 'Unnamed Run'),
+                        'pace_min_per_km': pace_min_per_km,
+                        'pace_formatted': f"{int(pace_min_per_km)}:{int((pace_min_per_km % 1) * 60):02d} min/km",
+                        'distance_km': distance_km,
+                        'date': start_date.strftime('%Y-%m-%d'),
+                        'id': activity.get('id')
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error processing activity {activity.get('id')}: {str(e)}")
+    
+    # Calculate additional stats
+    stats['total_moving_time_hours'] = stats['total_moving_time_seconds'] / 3600
+    stats['avg_distance_per_run_km'] = stats['total_distance_km'] / stats['total_activities'] if stats['total_activities'] > 0 else 0
+    stats['avg_pace_min_per_km'] = (stats['total_moving_time_seconds'] / 60) / stats['total_distance_km'] if stats['total_distance_km'] > 0 else 0
+    
+    # Format pace as MM:SS
+    if stats['avg_pace_min_per_km'] > 0:
+        minutes = int(stats['avg_pace_min_per_km'])
+        seconds = int((stats['avg_pace_min_per_km'] % 1) * 60)
+        stats['avg_pace_formatted'] = f"{minutes}:{seconds:02d} min/km"
+    else:
+        stats['avg_pace_formatted'] = "N/A"
+    
+    return stats
 
 def refresh_access_token():
     """Refresh the access token using the refresh token"""
-    logger.info("Attempting to refresh access token")
-    
-    refresh_token = session.get('refresh_token')
-    if not refresh_token:
-        logger.error("No refresh token available")
-        return False
-    
-    token_data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'refresh_token',
-        'refresh_token': refresh_token
-    }
-    
+    if 'refresh_token' not in session:
+        logger.error("No refresh token in session")
+        return None
+        
     try:
-        response = requests.post('https://www.strava.com/oauth/token', data=token_data)
-        logger.info(f"Token refresh response status: {response.status_code}")
+        response = requests.post(
+            STRAVA_TOKEN_URL,
+            data={
+                'client_id': STRAVA_CLIENT_ID,
+                'client_secret': STRAVA_CLIENT_SECRET,
+                'grant_type': 'refresh_token',
+                'refresh_token': session['refresh_token']
+            }
+        )
         
-        if response.status_code != 200:
-            logger.error(f"Token refresh failed: {response.text}")
-            return False
-        
-        token_response = response.json()
-        session['access_token'] = token_response['access_token']
-        session['refresh_token'] = token_response.get('refresh_token', refresh_token)  # Update if new one provided
-        session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)
-        
-        logger.info("Token refreshed successfully")
-        logger.info(f"New token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
-        return True
-        
+        if response.status_code == 200:
+            token_data = response.json()
+            
+            # Update session with new tokens
+            session['access_token'] = token_data['access_token']
+            session['refresh_token'] = token_data.get('refresh_token', session['refresh_token'])
+            session['token_expires_at'] = time.time() + token_data['expires_in']
+            
+            logger.info("Successfully refreshed access token")
+            return token_data['access_token']
+        else:
+            logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
+            return None
+            
     except Exception as e:
-        logger.error(f"Error during token refresh: {str(e)}")
-        return False
+        logger.error(f"Error refreshing token: {str(e)}")
+        return None
 
 def get_valid_access_token():
     """Get a valid access token, refreshing if necessary"""
-    # Check if we have a token
     if 'access_token' not in session:
-        logger.warning("No access token in session")
         return None
+        
+    # Check if token is expired or about to expire (within 5 minutes)
+    if time.time() >= session.get('token_expires_at', 0) - 300:
+        logger.info("Access token expired or about to expire, refreshing...")
+        return refresh_access_token()
     
-    # Check if token is still valid (with 5-minute buffer)
-    expires_at = session.get('token_expires_at', 0)
-    if time.time() < expires_at - 300:  # 5 minute buffer
-        logger.debug("Access token is still valid")
-        return session['access_token']
-    
-    # Token is expired, try to refresh
-    logger.info("Access token expired, attempting refresh")
-    if refresh_access_token():
-        return session['access_token']
-    else:
-        logger.error("Failed to refresh token, user needs to re-authenticate")
-        return None
+    return session['access_token']
 
 def get_all_activities():
-    logger.info("get_all_activities called")
-    page = 1
-    per_page = 100  # Maximum allowed by Strava API
-    
-    # Get auth headers with automatic token refresh
-    headers = get_strava_auth_headers(user)
-    if not headers:
-        logger.error("Failed to get valid authentication headers")
+    """Fetch all activities from Strava API with pagination"""
+    access_token = get_valid_access_token()
+    if not access_token:
+        logger.error("No valid access token available")
         return None
+    
+    all_activities = []
+    page = 1
+    per_page = 200  # Maximum allowed by Strava API
+    
+    headers = {
+        'Authorization': f'Bearer {access_token}'
+    }
     
     while True:
         try:
-            url = f"https://www.strava.com/api/v3/athlete/activities?page={page}&per_page={per_page}"
+            # Get activities with pagination
+            response = requests.get(
+                f'{STRAVA_API_BASE_URL}/athlete/activities',
+                headers=headers,
+                params={
+                    'page': page,
+                    'per_page': per_page
+                }
+            )
             
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            
-            page_activities = response.json()
-            if not page_activities:
-                break
+            if response.status_code == 200:
+                activities = response.json()
+                if not activities:  # No more activities
+                    break
+                    
+                all_activities.extend(activities)
+                logger.info(f"Fetched page {page} with {len(activities)} activities")
                 
-            activities.extend(page_activities)
-            page += 1
-            
-            # Rate limiting: respect Strava's rate limits
-            rate_limit = response.headers.get('X-RateLimit-Limit')
-            rate_usage = response.headers.get('X-RateLimit-Usage')
-            if rate_limit and rate_usage:
-                used, limit = map(int, rate_usage.split(','))
-                if used >= int(rate_limit):
-                    time.sleep(900)  # Wait 15 minutes if rate limit is close
-            
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                logger.error("Unauthorized - token may have expired")
-                # Try to refresh token once
-                headers = get_strava_auth_headers(user)
-                if not headers:
+                # If we got fewer activities than requested, we've reached the end
+                if len(activities) < per_page:
+                    break
+                    
+                page += 1
+                
+            elif response.status_code == 401:  # Unauthorized, try to refresh token
+                logger.warning("Token expired, attempting to refresh...")
+                new_token = refresh_access_token()
+                if new_token:
+                    headers['Authorization'] = f'Bearer {new_token}'
+                    continue  # Retry the same page with new token
+                else:
+                    logger.error("Failed to refresh token")
                     return None
-                continue
-            logger.error(f"Error fetching activities: {str(e)}")
-        page += 1
-        
-        # Safety check to prevent infinite loops
-        if page > 10:
-            logger.warning("Safety limit reached, stopping fetch")
-            break
+                    
+            else:
+                logger.error(f"Error fetching activities: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Exception while fetching activities: {str(e)}")
+            return None
     
     logger.info(f"Total activities fetched: {len(all_activities)}")
     return all_activities
 
 def analyze_with_chatgpt(activities, athlete_name):
     """Analyze activities using ChatGPT API"""
-    logger.info(f"analyze_with_chatgpt called for {len(activities)} activities")
+    if not activities:
+        return "No activities to analyze."
+    
     try:
-        # Filter for 2025 runs only
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
-        logger.info(f"Processing {len(runs_2025)} runs from 2025")
+        # Prepare the prompt for ChatGPT
+        prompt = f"""Analyze the following running activities for {athlete_name} and provide insights:
         
-        # Prepare data for ChatGPT
-        summary = {
-            'athlete': athlete_name,
-            'total_runs': len(runs_2025),
-            'total_distance': round(sum(a['distance'] / 1000 for a in runs_2025), 2),
-            'recent_runs': []
-        }
+        Total Activities: {len(activities)}
         
-        # Add recent 10 runs for detailed analysis
-        for run in runs_2025[:10]:
-            summary['recent_runs'].append({
-                'date': run['start_date'][:10],
-                'name': run['name'],
-                'distance_km': round(run['distance'] / 1000, 2),
-                'time_minutes': run['moving_time'] // 60,
-                'pace_min_per_km': round((run['moving_time'] / 60) / (run['distance'] / 1000), 2)
-            })
-        
-        # Create prompt for ChatGPT
-        prompt = f"""
-        Analyze this 2025 running data for {athlete_name}:
-        
-        Summary: {json.dumps(summary, indent=2)}
-        
-        Please provide:
-        1. Performance insights and trends
-        2. Training recommendations
-        3. Goal setting suggestions
-        4. Notable achievements
-        5. Areas for improvement
-        
-        Format the response in a clear, encouraging way suitable for an athlete.
+        Activities (Date, Name, Distance, Moving Time, Average Speed, Max Speed):
         """
         
-        try:
-            headers = {
-                'Authorization': f'Bearer {OPENAI_API_KEY}',
-                'Content-Type': 'application/json'
-            }
-            
-            data = {
-                'model': 'gpt-3.5-turbo',
-                'messages': [
-                    {'role': 'system', 'content': 'You are a helpful running coach and data analyst.'},
-                    {'role': 'user', 'content': prompt}
-                ],
-                'max_tokens': 1000,
-                'temperature': 0.7
-            }
-            
-            response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
-            logger.info(f"OpenAI API response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.json()['choices'][0]['message']['content']
-                logger.info("Successfully received analysis from OpenAI")
-                return result
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                return f"OpenAI API Error: {response.status_code} - {response.text}"
+        # Add activity details to the prompt
+        for i, activity in enumerate(activities[:50]):  # Limit to first 50 activities to avoid token limits
+            try:
+                date = activity.get('start_date', 'N/A')
+                name = activity.get('name', 'Unnamed Activity')
+                distance = activity.get('distance', 0) / 1000  # Convert to km
+                moving_time = activity.get('moving_time', 0)
+                avg_speed = activity.get('average_speed', 0) * 3.6  # Convert to km/h
+                max_speed = activity.get('max_speed', 0) * 3.6  # Convert to km/h
                 
-        except Exception as e:
-            logger.error(f"Error calling OpenAI API: {str(e)}")
-            return f"Error calling OpenAI API: {str(e)}"
-            
+                prompt += f"\n- {date}: {name} | {distance:.1f} km | {moving_time//3600}h {(moving_time%3600)//60}m | {avg_speed:.1f} km/h (avg) | {max_speed:.1f} km/h (max)"
+            except Exception as e:
+                logger.error(f"Error formatting activity {i}: {str(e)}")
+                continue
+        
+        # Add analysis instructions
+        prompt += """
+        
+        Please provide insights on:
+        1. Training volume and consistency
+        2. Performance trends over time
+        3. Notable achievements or milestones
+        4. Any patterns in training (time of day, day of week, etc.)
+        5. Suggestions for improvement
+        
+        Format the response in a clear, structured way with sections and bullet points.
+        """
+        
+        # Call ChatGPT API
+        openai.api_key = os.getenv('OPENAI_API_KEY')
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful running coach analyzing training data."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        # Extract and return the analysis
+        analysis = response.choices[0].message.content.strip()
+        return analysis
+        
     except Exception as e:
-        logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
-        return f"Error in analyze_with_chatgpt: {str(e)}"
+        logger.error(f"Error in ChatGPT analysis: {str(e)}")
+        return f"An error occurred while analyzing your activities: {str(e)}"
 
 # User Authentication Routes
 
@@ -352,455 +433,362 @@ def analyze_with_chatgpt(activities, athlete_name):
 def register():
     if request.method == 'POST':
         username = request.form.get('username')
-        email = request.form.get('email')
         password = request.form.get('password')
         
+        # Check if username already exists
         if User.query.filter_by(username=username).first():
-            flash('Username already exists')
+            flash('Username already exists. Please choose a different one.', 'error')
             return redirect(url_for('register'))
-            
-        if User.query.filter_by(email=email).first():
-            flash('Email already registered')
-            return redirect(url_for('register'))
-            
-        user = User(username=username, email=email)
-        user.set_password(password)
-        db.session.add(user)
+        
+        # Create new user
+        hashed_password = generate_password_hash(password, method='sha256')
+        new_user = User(
+            username=username,
+            password=hashed_password,
+            is_active=True,
+            last_active=datetime.utcnow(),
+            created_at=datetime.utcnow()
+        )
+        
+        # Make space for new user if needed
+        if User.query.filter_by(is_active=True).count() >= MAX_ACTIVE_USERS:
+            make_space_for_new_user()
+        
+        db.session.add(new_user)
         db.session.commit()
         
-        login_user(user)
-        flash('Registration successful!')
-        return redirect(url_for('home'))
-        
+        flash('Registration successful! Please log in.', 'success')
+        return redirect(url_for('login'))
+    
     return '''
-    <h2>Register</h2>
-    <form method="POST">
-        <input type="text" name="username" placeholder="Username" required><br>
-        <input type="email" name="email" placeholder="Email" required><br>
-        <input type="password" name="password" placeholder="Password" required><br>
-        <button type="submit">Register</button>
-    </form>
-    <p>Already have an account? <a href="/login">Login here</a></p>
+        <h2>Register</h2>
+        <form method="post">
+            <label>Username: <input type="text" name="username" required></label><br>
+            <label>Password: <input type="password" name="password" required></label><br>
+            <button type="submit">Register</button>
+        </form>
+        <p>Already have an account? <a href="/login">Log in here</a></p>
     '''
+
+def make_space_for_new_user():
+    """Deactivate oldest inactive user if we've reached the limit"""
+    try:
+        # Find the oldest inactive user
+        inactive_threshold = datetime.utcnow() - timedelta(days=INACTIVITY_DAYS)
+        oldest_inactive = User.query.filter(
+            User.is_active == True,
+            User.last_active < inactive_threshold
+        ).order_by(User.last_active).first()
+        
+        if oldest_inactive:
+            logger.info(f"Deactivating inactive user: {oldest_inactive.username}")
+            oldest_inactive.is_active = False
+            db.session.commit()
+            return True
+        else:
+            logger.warning("No inactive users to deactivate")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error making space for new user: {str(e)}")
+        return False
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+        
         user = User.query.filter_by(username=username).first()
         
-        if user and user.check_password(password):
+        if user and check_password_hash(user.password, password):
+            # Update last active time
+            user.last_active = datetime.utcnow()
+            db.session.commit()
+            
             login_user(user)
             next_page = request.args.get('next')
             return redirect(next_page or url_for('home'))
-        
-        flash('Invalid username or password')
+        else:
+            flash('Invalid username or password', 'error')
     
     return '''
-    <h2>Login</h2>
-    <form method="POST">
-        <input type="text" name="username" placeholder="Username" required><br>
-        <input type="password" name="password" placeholder="Password" required><br>
-        <button type="submit">Login</button>
-    </form>
-    <p>Don't have an account? <a href="/register">Register here</a></p>
+        <h2>Login</h2>
+        <form method="post">
+            <label>Username: <input type="text" name="username" required></label><br>
+            <label>Password: <input type="password" name="password" required></label><br>
+            <button type="submit">Log In</button>
+        </form>
+        <p>Don't have an account? <a href="/register">Register here</a></p>
     '''
 
 @app.route('/logout')
 @login_required
 def logout():
     logout_user()
-    return redirect(url_for('home'))
+    return redirect(url_for('login'))
 
 @app.route('/')
 def home():
-    if current_user.is_authenticated:
-        if current_user.access_token:
-            logger.info("User is logged in with Strava, showing stats page")
-            return get_stats_page()
-        else:
-            logger.info("User is logged in but not connected to Strava")
-            return '''
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Connect to Strava - Year-End Running Summary</title>
-                <style>
-                    * { margin: 0; padding: 0; box-sizing: border-box; }
-                    body {
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        min-height: 100vh;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        padding: 20px;
-                    }
-                    .container {
-                        background: white;
-                        padding: 3rem;
-                        border-radius: 15px;
-                        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-                        text-align: center;
-                        max-width: 500px;
-                        width: 100%;
-                    }
-                    h1 {
-                        color: #333;
-                        margin-bottom: 1.5rem;
-                        font-size: 2rem;
-                    }
-                    p {
-                        color: #555;
-                        margin-bottom: 2rem;
-                        line-height: 1.6;
-                    }
-                    .btn {
-                        display: inline-block;
-                        background: #FC4C02;
-                        color: white;
-                        padding: 12px 30px;
-                        border-radius: 30px;
-                        text-decoration: none;
-                        font-weight: 600;
-                        font-size: 1.1rem;
-                        transition: all 0.3s ease;
-                        border: none;
-                        cursor: pointer;
-                        margin: 10px 0;
-                    }
-                    .btn:hover {
-                        background: #e04200;
-                        transform: translateY(-2px);
-                        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-                    }
-                    .logo {
-                        max-width: 200px;
-                        margin-bottom: 1.5rem;
-                    }
-                    .features {
-                        text-align: left;
-                        margin: 2rem 0;
-                    }
-                    .feature {
-                        display: flex;
-                        align-items: center;
-                        margin-bottom: 1rem;
-                    }
-                    .feature i {
-                        color: #FC4C02;
-                        margin-right: 10px;
-                        font-size: 1.2rem;
-                    }
-                </style>
-                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-            </head>
-            <body>
-                <div class="container">
-                    <h1>Welcome to Your Running Summary</h1>
-                    <p>Connect your Strava account to see your 2025 running statistics and insights.</p>
-                    
-                    <a href="/connect-strava" class="btn">
-                        <i class="fab fa-strava"></i> Connect with Strava
-                    </a>
-                    
-                    <div class="features">
-                        <div class="feature">
-                            <i class="fas fa-chart-line"></i>
-                            <span>View your running statistics</span>
-                        </div>
-                        <div class="feature">
-                            <i class="fas fa-trophy"></i>
-                            <span>Track your progress</span>
-                        </div>
-                        <div class="feature">
-                            <i class="fas fa-lock"></i>
-                            <span>Your data is secure</span>
-                        </div>
-                    </div>
-                    
-                    <p><small>By connecting, you agree to our <a href="/privacy" style="color: #667eea;">Privacy Policy</a> and <a href="/terms" style="color: #667eea;">Terms of Service</a>.</small></p>
-                    <p><a href="/logout" style="color: #718096; text-decoration: none;">Not {current_user.username}? Logout</a></p>
-                </div>
-            </body>
-            </html>
-            '''.format(current_user=current_user)
-    else:
-        logger.info("User not logged in, showing login page")
-        return '''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Year-End Running Summary for Strava - 2025</title>
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                
-                body {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 20px;
-                }
-                
-                .container {
-                    background: white;
-                    padding: 3rem;
-                    border-radius: 15px;
-                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-                    text-align: center;
-                    max-width: 500px;
-                    width: 100%;
-                }
-                
-                .year-display {
-                    font-size: 4rem;
-                    font-weight: bold;
-                    color: #ffffff;
-                    text-shadow: 3px 3px 6px rgba(0,0,0,0,0.3);
-                    margin-bottom: 1rem;
-                    animation: glow 2s ease-in-out infinite alternate;
-                }
-                
-                @keyframes glow {
-                    from {{ text-shadow: 3px 3px 6px rgba(0,0,0,0.3); }}
-                    to {{ text-shadow: 3px 3px 20px rgba(255,255,255,0.5); }}
-                }
-                
-                .title {
-                    font-size: 2.5rem;
-                    color: #ffffff;
-                    margin-bottom: 2rem;
-                    font-weight: 300;
-                }
-                
-                .subtitle {
-                    font-size: 1.2rem;
-                    color: #e0e0e0;
-                    margin-bottom: 3rem;
-                    line-height: 1.6;
-                }
-                
-                .login-btn {
-                    display: inline-block;
-                    background: linear-gradient(45deg, #ff6b6b, #ee5a52);
-                    color: white;
-                    padding: 1rem 2.5rem;
-                    text-decoration: none;
-                    border-radius: 50px;
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    transition: all 0.3s ease;
-                    box-shadow: 0 4px 15px rgba(238, 82, 83, 0.4);
-                }
-                
-                .login-btn:hover {
-                    transform: translateY(-3px);
-                    box-shadow: 0 8px 25px rgba(238, 82, 83, 0.6);
-                    background: linear-gradient(45deg, #ee5a52, #ff6b6b);
-                }
-                
-                .calendar-icon {
-                    font-size: 3rem;
-                    margin-bottom: 1rem;
-                    animation: spin 20s linear infinite;
-                }
-                
-                @keyframes spin {
-                    from {{ transform: rotate(0deg); }}
-                    to {{ transform: rotate(360deg); }}
-                }
-                
-                .confetti {
-                    position: absolute;
-                    width: 10px;
-                    height: 10px;
-                    background: #ff6b6b;
-                    animation: fall 3s linear infinite;
-                }
-                
-                .confetti:nth-child(1) {{ left: 10%; animation-delay: 0s; background: #ff6b6b; }}
-                .confetti:nth-child(2) {{ left: 20%; animation-delay: 0.5s; background: #4ecdc4; }}
-                .confetti:nth-child(3) {{ left: 30%; animation-delay: 1s; background: #45b7d1; }}
-                .confetti:nth-child(4) {{ left: 40%; animation-delay: 1.5s; background: #f9ca24; }}
-                .confetti:nth-child(5) {{ left: 50%; animation-delay: 2s; background: #f4d03f; }}
-                .confetti:nth-child(6) {{ left: 60%; animation-delay: 2.5s; background: #6c5ce7; }}
-                .confetti:nth-child(7) {{ left: 70%; animation-delay: 0.3s; background: #a8e6cf; }}
-                .confetti:nth-child(8) {{ left: 80%; animation-delay: 0.8s; background: #ffd700; }}
-                .confetti:nth-child(9) {{ left: 90%; animation-delay: 1.3s; background: #ff69b4; }}
-                
-                @keyframes fall {
-                    0% {{ transform: translateY(-100vh) rotate(0deg); opacity: 1; }}
-                    100% {{ transform: translateY(100vh) rotate(360deg); opacity: 0; }}
-                }
-                
-                .features {
-                    margin-top: 2rem;
-                    color: #e0e0e0;
-                }
-                
-                .feature {
-                    margin: 0.5rem 0;
-                    font-size: 0.9rem;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
+    if not current_user.is_authenticated:
+        return redirect(url_for('login'))
+    
+    # Update last active time
+    current_user.last_active = datetime.utcnow()
+    db.session.commit()
+    
+    # Check if user has Strava connected
+    has_strava = bool(current_user.access_token)
+    
+    # Get basic stats if available
+    stats = {}
+    if has_strava:
+        try:
+            # Store tokens in session for the web interface
+            session['access_token'] = current_user.access_token
+            session['refresh_token'] = current_user.refresh_token
+            session['token_expires_at'] = current_user.token_expires_at.timestamp() if current_user.token_expires_at else None
             
-            <div class="container">
-                <div class="calendar-icon">📅</div>
-                <div class="year-display">2025</div>
-                <h1 class="title">Year-End Running Summary</h1>
-                <p class="subtitle">
-                    Celebrate your 2025 running journey with personalized insights,<br>
-                    AI-powered analysis, and shareable achievements
-                </p>
-                
-                <a href="/login" class="login-btn">
-                    🏃‍♂️ Connect with Strava
-                </a>
-                
-                <div class="features">
-                    <div class="feature">📊 Detailed Statistics & Analytics</div>
-                    <div class="feature">🤖 AI-Powered Insights</div>
-                    <div class="feature">📱 Social Media Ready</div>
-                    <div class="feature">🎯 Goal Tracking</div>
-                    <div class="feature">🏆 Achievement Badges</div>
+            # Fetch some basic stats
+            activities = get_all_activities()
+            if activities:
+                stats = analyze_wrapped_stats(activities)
+        except Exception as e:
+            logger.error(f"Error fetching Strava data: {str(e)}")
+            flash('Error fetching your Strava data. Please try reconnecting.', 'error')
+    
+    return f"""
+        <h1>Welcome, {current_user.username}!</h1>
+        
+        {f'<p>Last active: {current_user.last_active.strftime("%Y-%m-%d %H:%M")}</p>' if current_user.last_active else ''}
+        
+        <h2>Strava Connection</h2>
+        {
+            f'<p>Connected to Strava! <a href="/strava/disconnect">Disconnect</a></p>'
+            if has_strava else
+            f'<p><a href="{url_for("strava_auth")}" class="connect-strava-btn">Connect with Strava</a></p>'
+        }
+        
+        {
+            f"""
+            <h2>Your Running Stats</h2>
+            <div class="stats-container">
+                <div class="stat-box">
+                    <div class="stat-value">{stats.get('total_activities', 0)}</div>
+                    <div class="stat-label">Total Runs</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{stats.get('total_distance_km', 0):.1f}</div>
+                    <div class="stat-label">Total Distance (km)</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{stats.get('total_moving_time_hours', 0):.1f}</div>
+                    <div class="stat-label">Total Time (hours)</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{stats.get('avg_pace_formatted', 'N/A')}</div>
+                    <div class="stat-label">Average Pace</div>
                 </div>
             </div>
-        </body>
-        </html>
-        '''
+            
+            <h3>Recent Activities</h3>
+            <ul>
+                {"".join([
+                    f"<li>{a.get('name', 'Unnamed Run')} - {a.get('distance', 0)/1000:.1f} km on {a.get('start_date', '')[:10]}</li>"
+                    for a in activities[:5]  # Show last 5 activities
+                ]) if activities else '<li>No activities found</li>'}
+            </ul>
+            
+            <p><a href="/stats">View detailed stats</a></p>
+            """ if has_strava and stats else ''
+        }
+        
+        <style>
+            .stats-container {
+                display: flex;
+                justify-content: space-around;
+                margin: 20px 0;
+                flex-wrap: wrap;
+            }
+            .stat-box {
+                background: #f8f9fa;
+                border-radius: 10px;
+                padding: 15px;
+                margin: 10px;
+                text-align: center;
+                min-width: 150px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }
+            .stat-value {
+                font-size: 2rem;
+                font-weight: bold;
+                color: #4a5568;
+            }
+            .stat-label {
+                color: #718096;
+                font-size: 0.9rem;
+            }
+            .connect-strava-btn {
+                display: inline-block;
+                background: #FC4C02;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 5px;
+                text-decoration: none;
+                font-weight: 600;
+                transition: background 0.3s ease;
+            }
+            .connect-strava-btn:hover {
+                background: #e04200;
+            }
+        </style>
+    """
 
 @app.route('/login')
 def login():
-    logger.info("Login route accessed")
-    logger.debug(f"CLIENT_ID = {CLIENT_ID}")
-    logger.debug(f"REDIRECT_URI = {REDIRECT_URI}")
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
-    logger.debug(f"Full auth URL = {auth_url}")
-    logger.info("Redirecting to Strava OAuth...")
-    return redirect(auth_url)
+    # If user is already logged in, redirect to home
+    if current_user.is_authenticated:
+        return redirect(url_for('home'))
+    
+    # Otherwise, redirect to the login page
+    return redirect(url_for('login'))
 
 @app.route('/test')
 def test():
-    return "Test route is working!"
+    return 'Test route is working!'
 
 @app.route('/callback')
 def callback():
-    logger.info("Callback route accessed")
-    logger.debug(f"Request args: {dict(request.args)}")
+    # Handle Strava OAuth callback
+    error = request.args.get('error')
+    if error:
+        return f'Error from Strava: {error}'
     
     code = request.args.get('code')
-    error = request.args.get('error')
+    if not code:
+        return 'No authorization code provided', 400
     
-    if error:
-        logger.error(f"OAuth error: {error}")
-        return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
+    try:
+        # Exchange authorization code for access token
+        response = requests.post(
+            STRAVA_TOKEN_URL,
+            data={
+                'client_id': STRAVA_CLIENT_ID,
+                'client_secret': STRAVA_CLIENT_SECRET,
+                'code': code,
+                'grant_type': 'authorization_code'
+            }
+        )
+        
+        if response.status_code == 200:
+            token_data = response.json()
+            
+            # Store tokens in the database for the current user
+            if current_user.is_authenticated:
+                current_user.access_token = token_data['access_token']
+                current_user.refresh_token = token_data['refresh_token']
+                current_user.token_expires_at = datetime.fromtimestamp(token_data['expires_at'])
+                current_user.last_active = datetime.utcnow()
+                db.session.commit()
+                
+                # Also store in session for immediate use
+                session['access_token'] = token_data['access_token']
+                session['refresh_token'] = token_data['refresh_token']
+                session['token_expires_at'] = token_data['expires_at']
+                
+                logger.info(f"Successfully connected Strava for user {current_user.username}")
+                flash('Successfully connected to Strava!', 'success')
+                return redirect(url_for('home'))
+            else:
+                logger.error("No authenticated user found when processing Strava callback")
+                return 'User not authenticated', 401
+        else:
+            logger.error(f"Error exchanging code for token: {response.status_code} - {response.text}")
+            return 'Failed to authenticate with Strava', 500
+            
+    except Exception as e:
+        logger.error(f"Exception in callback: {str(e)}")
+        return f'An error occurred: {str(e)}', 500
+
 @app.route('/callback/')
 def callback_with_slash():
-    logger.info("Callback with slash route accessed")
-    return "Callback with slash works!"
+    # Handle case where callback URL is called with a trailing slash
+    return redirect(url_for('callback', **request.args))
 
 @app.route('/logout')
 def logout():
-    logger.info("User logging out, clearing session")
-    session.clear()
-    return '<h1>Logged Out</h1><p><a href="/login">Login again</a></p>'
+    # Clear session data
+    session.pop('access_token', None)
+    session.pop('refresh_token', None)
+    session.pop('token_expires_at', None)
+    session.pop('athlete_info', None)
+    
+    # Log out the user
+    logout_user()
+    
+    # Redirect to home page
+    return redirect(url_for('home'))
 
 @app.route('/token-status')
 def token_status():
-    """Route to check current token status (for debugging)"""
+    # Route to check current token status (for debugging)
     if 'access_token' not in session:
-        return '<h1>No Token</h1><p>No access token in session. <a href="/login">Login</a></p>'
+        return 'No access token in session', 401
     
-    expires_at = session.get('token_expires_at', 0)
-    time_remaining = expires_at - time.time()
-    refresh_available = 'Yes' if session.get('refresh_token') else 'No'
+    # Check if token is expired
+    is_expired = time.time() >= session.get('token_expires_at', 0)
     
-    status_html = f"""
-    <h1>Token Status</h1>
-    <p><strong>Access Token:</strong> Available</p>
-    <p><strong>Expires At:</strong> {datetime.fromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')}</p>
-    <p><strong>Time Remaining:</strong> {int(time_remaining // 60)} minutes {int(time_remaining % 60)} seconds</p>
-    <p><strong>Refresh Token Available:</strong> {refresh_available}</p>
-    <p><strong>Athlete:</strong> {session.get('athlete_info', {}).get('firstname', 'Unknown')} {session.get('athlete_info', {}).get('lastname', '')}</p>
-    <p><a href="/">Back to Stats</a> | <a href="/logout">Logout</a></p>
-    """
-    
-    return status_html
+    return jsonify({
+        'has_token': 'access_token' in session,
+        'is_expired': is_expired,
+        'expires_at': datetime.fromtimestamp(session.get('token_expires_at', 0)).isoformat() if 'token_expires_at' in session else None,
+        'time_until_expiry': (session.get('token_expires_at', 0) - time.time()) if 'token_expires_at' in session else None
+    })
 
 @app.route('/analyze')
 def analyze():
-    """Route to analyze data with ChatGPT"""
-    logger.info("Analyze route accessed")
+    # Route to analyze data with ChatGPT
+    if 'access_token' not in session:
+        return redirect(url_for('login'))
+    
     try:
-        if 'access_token' not in session:
-            logger.warning("No access token in session, redirecting to login")
-            return redirect('/login')
-        
-        logger.info("User has access token, proceeding with analysis")
-        athlete = session.get('athlete_info', {})
-        athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
-        logger.info(f"Analyzing data for athlete: {athlete_name}")
-        
-        logger.info("Fetching activities for analysis")
+        # Get activities
         activities = get_all_activities()
-        if activities is None:
-            logger.error("Failed to fetch activities due to authentication error")
-            return redirect('/login')
-        logger.info(f"Fetched {len(activities)} total activities for analysis")
+        if not activities:
+            return 'No activities found', 404
         
-        logger.info("Calling ChatGPT API for analysis")
+        # Get athlete info for the name
+        athlete_name = 'Runner'  # Default name
+        if 'athlete_info' in session:
+            athlete_info = session['athlete_info']
+            athlete_name = f"{athlete_info.get('firstname', '')} {athlete_info.get('lastname', '')}".strip() or 'Runner'
+        
+        # Analyze with ChatGPT
         analysis = analyze_with_chatgpt(activities, athlete_name)
-        logger.info("ChatGPT analysis completed")
         
+        # Return the analysis
         return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>ChatGPT Analysis</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .analysis {{ background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                .back-btn {{ background: #007bff; color: white; padding: 10px; text-decoration: none; border-radius: 4px; }}
-            </style>
-        </head>
-        <body>
-            <h1>ChatGPT Running Analysis for {athlete_name}</h1>
-            <a href="/" class="back-btn">← Back to Stats</a>
-            
-            <div class="analysis">
-                <h2>AI Coach Insights</h2>
-                <pre style="white-space: pre-wrap; font-family: Arial;">{analysis}</pre>
+            <h1>Your Running Analysis</h1>
+            <div style="white-space: pre-line; background: #f8f9fa; padding: 20px; border-radius: 5px;">
+                {analysis}
             </div>
-            
-            <p><a href="/" class="back-btn">← Back to Stats</a></p>
-        </body>
-        </html>
+            <p><a href="/">Back to home</a></p>
         """
+        
     except Exception as e:
-        logger.error(f"Error in analyze route: {str(e)}")
-        return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
+        logger.error(f"Error in analysis: {str(e)}")
+        return f'An error occurred during analysis: {str(e)}', 500
 
+@app.route('/stats')
 def get_stats_page():
     logger.info("get_stats_page called")
+    
+    # Check for cached stats first
+    if 'cached_stats' in session and 'athlete_info' in session:
+        logger.info("Using cached stats")
+        stats = session['cached_stats']
+        return render_template_string(STATS_TEMPLATE, **stats)
+        
     try:
         # Get token from session
         if 'access_token' not in session:
@@ -875,7 +863,12 @@ def get_stats_page():
                 error_count += 1
                 continue
         
-        # Generate stats HTML
+        # Calculate total stats
+        total_runs = len(runs_2025)
+        total_distance = sum(run.get('distance', 0) / 1000 for run in runs_2025)  # in km
+        total_time = sum(run.get('elapsed_time', 0) / 3600 for run in runs_2025)  # in hours
+        
+        # Create stats HTML
         stats_html = f"""
         <div class="stats-container">
             <div class="stat-box">
@@ -893,419 +886,48 @@ def get_stats_page():
         </div>
         """
         
-        # Generate HTML
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Your 2025 Running Summary</title>
-            <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                
-                body {{ 
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }}
-                
-                .container {{
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background: rgba(255, 255, 255, 0.95);
-                    border-radius: 15px;
-                    padding: 30px;
-                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-                }}
-                
-                h1 {{
-                    color: #2d3748;
-                    text-align: center;
-                    margin-bottom: 30px;
-                    font-size: 2.5rem;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                }}
-                
-                .stats-container {{
-                    display: flex;
-                    justify-content: space-around;
-                    margin: 30px 0;
-                    flex-wrap: wrap;
-                    gap: 20px;
-                }}
-                
-                .stat-box {{
-                    background: white;
-                    padding: 20px;
-                    border-radius: 10px;
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                    text-align: center;
-                    flex: 1;
-                    min-width: 200px;
-                    transition: transform 0.3s ease;
-                }}
-                
-                .stat-box:hover {{
-                    transform: translateY(-5px);
-                }}
-                
-                .stat-value {{
-                    font-size: 2rem;
-                    font-weight: bold;
-                    color: #4a5568;
-                    margin-bottom: 5px;
-                }}
-                
-                .stat-label {{
-                    color: #718096;
-                    font-size: 0.9rem;
-                }}
-                
-                .table-container {{
-                    margin-top: 30px;
-                    overflow-x: auto;
-                    background: white;
-                    border-radius: 10px;
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                }}
-                
-                table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                }}
-                
-                th, td {{
-                    padding: 12px 15px;
-                    text-align: left;
-                    border-bottom: 1px solid #e2e8f0;
-                }}
-                
-                th {{
-                    background-color: #f8fafc;
-                    color: #4a5568;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    font-size: 0.8rem;
-                    letter-spacing: 0.5px;
-                }}
-                
-                tr:hover {{
-                    background-color: #f8fafc;
-                }}
-                
-                .date-cell {{ width: 15%; min-width: 150px; }}
-                .activity-cell {{ width: 40%; min-width: 200px; }}
-                .distance-cell, .time-cell, .pace-cell {{ width: 15%; text-align: right; }}
-                
-                .export-btn {{
-                    display: inline-block;
-                    background: #4f46e5;
-                    color: white;
-                    padding: 10px 20px;
-                    border-radius: 5px;
-                    text-decoration: none;
-                    margin-top: 20px;
-                    font-weight: 500;
-                    transition: background 0.3s ease;
-                    border: none;
-                    cursor: pointer;
-                    font-size: 1rem;
-                }}
-                
-                .export-btn:hover {{
-                    background: #4338ca;
-                }}
-                
-                .header-container {{
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 20px;
-                }}
-                
-                .logout-btn {{
-                    background: #e53e3e;
-                    color: white;
-                    padding: 8px 16px;
-                    border-radius: 5px;
-                    text-decoration: none;
-                    font-size: 0.9rem;
-                    transition: background 0.3s ease;
-                }}
-                
-                .connect-strava-btn {{
-                    background: #FC4C02;  /* Strava orange */
-                    color: white;
-                    padding: 8px 16px;
-                    border-radius: 5px;
-                    text-decoration: none;
-                    font-size: 0.9rem;
-                    transition: background 0.3s ease;
-                    margin-right: 10px;
-                }}
-                
-                .connect-strava-btn:hover {{
-                    background: #e04200;
-                }}
-                
-                .logout-btn:hover {{
-                    background: #c53030;
-                }}
-                
-                .alert {{
-                    padding: 15px;
-                    margin-bottom: 20px;
-                    border: 1px solid transparent;
-                    border-radius: 4px;
-                }}
-                
-                .alert-success {{
-                    color: #155724;
-                    background-color: #d4edda;
-                    border-color: #c3e6cb;
-                }}
-                
-                .alert-error {{
-                    color: #721c24;
-                    background-color: #f8d7da;
-                    border-color: #f5c6cb;
-                }}
-                
-                @media (max-width: 768px) {{
-                    .container {{
-                        padding: 15px;
-                    }}
-                    
-                    .stats-container {{
-                        flex-direction: column;
-                    }}
-                    
-                    .stat-box {{
-                        margin-bottom: 15px;
-                    }}
-                    
-                    th, td {{
-                        padding: 8px 10px;
-                        font-size: 0.9rem;
-                    }}
-                }}
-                .loading {{ 
-                    display: none;
-                    text-align: center;
-                    padding: 20px;
-                    color: #666;
-                }}
-                
-                .spinner {{ 
-                    border: 3px solid #f3f3f3;
-                    border-top: 3px solid #FC4C02;
-                    border-radius: 50%;
-                    width: 30px;
-                    height: 30px;
-                    animation: spin 1s linear infinite;
-                    margin: 0 auto 10px;
-                }}
-                
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <div>
-                        <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
-                        <div class="stats">
-                            <p><strong>Total Activities (All Time):</strong> {total_activities_count}</p>
-                            <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
-                            <p><strong>Other Activities:</strong> {other_activities_count}</p>
-                            {display_info}
-                        </div>
-                    </div>
-                    <div>
-                        <a href="/logout" style="color: white; text-decoration: none; font-weight: 600;">Logout</a>
-                    </div>
-                </div>
-                
-                <div class="button-container">
-                    <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
-                    <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
-                    <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
-                </div>
-                
-                <div class="table-container">
-                    <div class="loading" id="loading">
-                        <div class="spinner"></div>
-                        <p>Loading activities...</p>
-                    </div>
-                    <table id="activityTable">
-                        <thead>
-                            <tr><th>Date & Time (IST)</th><th>Activity Name</th><th>Distance (km)</th><th>Duration</th><th>Pace (min/km)</th></tr>
-                        </thead>
-                        <tbody>
-                            {table_rows}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            
-            <script>
-                // Add interactive features
-                document.addEventListener('DOMContentLoaded', function() {{
-                    // Hide loading spinner
-                    document.getElementById('loading').style.display = 'none';
-                    
-                    // Add click handlers to table rows
-                    const rows = document.querySelectorAll('tbody tr');
-                    rows.forEach(row => {{
-                        row.addEventListener('click', function() {{
-                            // Highlight selected row
-                            rows.forEach(r => r.style.background = '');
-                            this.style.background = 'linear-gradient(90deg, #e3f2fd, #ffffff)';
-                        }});
-                    }});
-                    
-                    // Add button hover effects
-                    const buttons = document.querySelectorAll('.copy-btn');
-                    buttons.forEach(btn => {{
-                        btn.addEventListener('mouseenter', function() {{
-                            this.style.transform = 'translateY(-2px) scale(1.05)';
-                        }});
-                        btn.addEventListener('mouseleave', function() {{
-                            this.style.transform = 'translateY(0) scale(1)';
-                        }});
-                    }});
-                }});
-                
-                function copyTableData() {{
-                    const table = document.getElementById('activityTable');
-                    const rows = table.getElementsByTagName('tr');
-                    let data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n';
-                    
-                    for (let i = 1; i < rows.length; i++) {{
-                        const cells = rows[i].getElementsByTagName('td');
-                        const rowData = [];
-                        for (let j = 0; j < cells.length; j++) {{
-                            rowData.push(cells[j].innerText);
-                        }}
-                        data += rowData.join(',') + '\\n';
-                    }}
-                    
-                    navigator.clipboard.writeText(data).then(function() {{
-                        alert('2025 running data copied to clipboard! You can now paste this into ChatGPT for poster generation.');
-                    }});
-                }}
-                
-                function copyWithPrompts() {{
-                    const csvData = `{csv_data}`;
-                    
-                    const prompts = `
-                    
-=== CHATGPT PROMPTS FOR STRAVA DATA ANALYSIS ===
-
-PROMPT 1: Basic Analysis
-"Analyze this running data and provide insights on:
-1. Performance trends and improvements
-2. Training consistency patterns  
-3. Goal achievement status
-4. Recommendations for future training
-
-Data:
-${{csvData}}"
-
-PROMPT 2: Visual Poster Creation
-"Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
-- Total distance and time statistics
-- Monthly breakdowns with progress indicators
-- Fastest/longest run highlights
-- Consistency streaks and patterns
-- Fun personality insights (early bird vs night owl)
-- Motivational summary
-
-Use emojis, creative formatting, and make it shareable!
-
-Data:
-${{csvData}}"
-
-PROMPT 3: Detailed Coaching Analysis
-"Act as a professional running coach and analyze this data comprehensively:
-1. Pace analysis and efficiency trends
-2. Weekly/monthly volume patterns
-3. Recovery and injury risk assessment
-4. Specific workout recommendations
-5. Long-term development plan
-
-Provide actionable advice with specific metrics.
-
-Data:
-${{csvData}}"
-
-PROMPT 4: Social Media Summary
-"Create engaging social media captions for different platforms about this running journey:
-- Instagram post with stats and achievements
-- Twitter summary with key highlights
-- Facebook story about progress
-- LinkedIn professional development angle
-
-Make it inspiring and shareable!
-
-Data:
-${{csvData}}"
-`;
-                    
-                    navigator.clipboard.writeText(prompts.trim()).then(function() {{
-                        alert('Data and analysis prompts copied! You now have 4 ready-to-use prompts for ChatGPT along with your running data.');
-                    }});
-                }}
-                
-                function copyPosterPrompt() {{
-                    const csvData = `{csv_data}`;
-                    
-                    const posterPrompt = `Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
-- Total distance and time statistics
-- Monthly breakdowns with progress indicators
-- Fastest/longest run highlights
-- Consistency streaks and patterns
-- Fun personality insights (early bird vs night owl)
-- Motivational summary
-
-Use emojis, creative formatting, and make it shareable!
-
-Data:
-${{csvData}}`;
-                    
-                    navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
-                        alert('Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.');
-                    }});
-                }}
-            </script>
-        </body>
-        </html>
-        """.format(
-            athlete_name_display=athlete_name_display,
-            total_activities_count=total_activities_count,
-            runs_2025_count=runs_2025_count,
-            other_activities_count=other_activities_count,
-            display_info=display_info,
-            csv_data=csv_data,
-            activities=activities,
-            runs_2025=runs_2025,
-            table_rows=table_rows
-        )
+        # Prepare the template context
+        context = {
+            'athlete_name': athlete_name,
+            'total_runs': total_runs,
+            'total_distance': round(total_distance, 2),
+            'total_time': round(total_time, 1),
+            'table_rows': table_rows,
+            'stats_html': stats_html,
+            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
         
-        return html_content
+        # Cache the stats in the session before disconnecting
+        session['cached_stats'] = context
+        
+        # Revoke Strava access after caching the data
+        if 'access_token' in session:
+            access_token = session['access_token']
+            try:
+                # Notify user about disconnection
+                flash('Your Strava account has been disconnected. Your data is now cached for your session.')
+                
+                # Revoke access token with Strava
+                revoke_url = 'https://www.strava.com/oauth/deauthorize'
+                response = requests.post(revoke_url, data={'access_token': access_token})
+                
+                if response.status_code == 200:
+                    logger.info("Successfully revoked Strava access")
+                else:
+                    logger.warning(f"Failed to revoke Strava access: {response.status_code} - {response.text}")
+                
+            except Exception as e:
+                logger.error(f"Error revoking Strava access: {str(e)}")
+            finally:
+                # Always clear the tokens from session
+                session.pop('access_token', None)
+                session.pop('refresh_token', None)
+                session.pop('token_expires_at', None)
+                session.modified = True
+        
+        # Return the rendered template with the context
+        return render_template_string(STATS_TEMPLATE, **context)
         
     except Exception as e:
         logger.error(f"Error in get_stats_page: {str(e)}")
-        return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
-
-if __name__ == '__main__':
-    logger.info("Starting Flask app...")
-    logger.info(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting on port {port}")
-    app.run(host='0.0.0.0', port=port)
+        return f'<h1>Error</h1><p>An error occurred while processing your request: {str(e)}</p><p><a href="/">Back to home</a></p>'
