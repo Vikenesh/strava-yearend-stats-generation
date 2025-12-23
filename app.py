@@ -1276,17 +1276,14 @@ ${{csvData}}`;
             </script>
         </body>
         </html>
-        """.format(
-            athlete_name_display=athlete_name_display,
-            total_activities_count=total_activities_count,
-            runs_2025_count=runs_2025_count,
-            other_activities_count=other_activities_count,
-            display_info=display_info,
-            csv_data=csv_data,
-            activities=activities,
-            runs_2025=runs_2025,
-            table_rows=table_rows
-        )
+        # Simple string replacement to avoid formatting issues
+        html_content = html_content.replace('{athlete_name_display}', str(athlete_name_display))
+        html_content = html_content.replace('{total_activities_count}', str(total_activities_count))
+        html_content = html_content.replace('{runs_2025_count}', str(runs_2025_count))
+        html_content = html_content.replace('{other_activities_count}', str(other_activities_count))
+        html_content = html_content.replace('{display_info}', display_info)
+        html_content = html_content.replace('{csv_data}', csv_data)
+        html_content = html_content.replace('{table_rows}', table_rows)
         
         return html_content
         
