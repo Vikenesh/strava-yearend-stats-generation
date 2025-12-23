@@ -320,19 +320,19 @@ def index():
         return get_stats_page()
     else:
         logger.info("User not logged in, showing login page")
-        return '''
+        return f"""
         <!DOCTYPE html>
         <html>
         <head>
             <title>Year-End Running Summary for Strava - 2025</title>
             <style>
-                * {
+                * {{
                     margin: 0;
                     padding: 0;
                     box-sizing: border-box;
-                }
+                }}
                 
-                body {
+                body {{
                     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     min-height: 100vh;
@@ -340,44 +340,44 @@ def index():
                     align-items: center;
                     justify-content: center;
                     overflow: hidden;
-                }
+                }}
                 
-                .container {
+                .container {{
                     text-align: center;
                     padding: 2rem;
                     max-width: 600px;
                     position: relative;
-                }
+                }}
                 
-                .year-display {
+                .year-display {{
                     font-size: 4rem;
                     font-weight: bold;
                     color: #ffffff;
                     text-shadow: 3px 3px 6px rgba(0,0,0,0,0.3);
                     margin-bottom: 1rem;
                     animation: glow 2s ease-in-out infinite alternate;
-                }
+                }}
                 
-                @keyframes glow {
+                @keyframes glow {{
                     from {{ text-shadow: 3px 3px 6px rgba(0,0,0,0.3); }}
                     to {{ text-shadow: 3px 3px 20px rgba(255,255,255,0.5); }}
-                }
+                }}
                 
-                .title {
+                .title {{
                     font-size: 2.5rem;
                     color: #ffffff;
                     margin-bottom: 2rem;
                     font-weight: 300;
-                }
+                }}
                 
-                .subtitle {
+                .subtitle {{
                     font-size: 1.2rem;
                     color: #e0e0e0;
                     margin-bottom: 3rem;
                     line-height: 1.6;
-                }
+                }}
                 
-                .login-btn {
+                .login-btn {{
                     display: inline-block;
                     background: linear-gradient(45deg, #ff6b6b, #ee5a52);
                     color: white;
@@ -388,32 +388,32 @@ def index():
                     font-weight: 600;
                     transition: all 0.3s ease;
                     box-shadow: 0 4px 15px rgba(238, 82, 83, 0.4);
-                }
+                }}
                 
-                .login-btn:hover {
+                .login-btn:hover {{
                     transform: translateY(-3px);
                     box-shadow: 0 8px 25px rgba(238, 82, 83, 0.6);
                     background: linear-gradient(45deg, #ee5a52, #ff6b6b);
-                }
+                }}
                 
-                .calendar-icon {
+                .calendar-icon {{
                     font-size: 3rem;
                     margin-bottom: 1rem;
                     animation: spin 20s linear infinite;
-                }
+                }}
                 
-                @keyframes spin {
+                @keyframes spin {{
                     from {{ transform: rotate(0deg); }}
                     to {{ transform: rotate(360deg); }}
-                }
+                }}
                 
-                .confetti {
+                .confetti {{
                     position: absolute;
                     width: 10px;
                     height: 10px;
                     background: #ff6b6b;
                     animation: fall 3s linear infinite;
-                }
+                }}
                 
                 .confetti:nth-child(1) {{ left: 10%; animation-delay: 0s; background: #ff6b6b; }}
                 .confetti:nth-child(2) {{ left: 20%; animation-delay: 0.5s; background: #4ecdc4; }}
@@ -425,20 +425,20 @@ def index():
                 .confetti:nth-child(8) {{ left: 80%; animation-delay: 0.8s; background: #ffd700; }}
                 .confetti:nth-child(9) {{ left: 90%; animation-delay: 1.3s; background: #ff69b4; }}
                 
-                @keyframes fall {
+                @keyframes fall {{
                     0% {{ transform: translateY(-100vh) rotate(0deg); opacity: 1; }}
                     100% {{ transform: translateY(100vh) rotate(360deg); opacity: 0; }}
-                }
+                }}
                 
-                .features {
+                .features {{
                     margin-top: 2rem;
                     color: #e0e0e0;
-                }
+                }}
                 
-                .feature {
+                .feature {{
                     margin: 0.5rem 0;
                     font-size: 0.9rem;
-                }
+                }}
             </style>
         </head>
         <body>
@@ -475,7 +475,7 @@ def index():
             </div>
         </body>
         </html>
-        '''
+        """
 
 @app.route('/login')
 def login():
