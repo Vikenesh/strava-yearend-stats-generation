@@ -1103,16 +1103,16 @@ def get_stats_page():
                     function logout() {
                         // Show a message before logging out
                         const logoutMsg = document.createElement('div');
-                        logoutMsg.style.position = 'fixed';
-                        logoutMsg.style.bottom = '20px';
-                        logoutMsg.style.right = '20px';
-                        logoutMsg.style.backgroundColor = '#f8d7da';
-                        logoutMsg.style.color = '#721c24';
-                        logoutMsg.style.padding = '15px';
-                        logoutMsg.style.borderRadius = '5px';
-                        logoutMsg.style.boxShadow = '0 2px 10px rgba(0,0,0,0.1)';
-                        logoutMsg.style.zIndex = '1000';
-                        logoutMsg.style.transition = 'opacity 0.5s';
+                        logoutMsg.style.position = "fixed";
+                        logoutMsg.style.bottom = "20px";
+                        logoutMsg.style.right = "20px";
+                        logoutMsg.style.backgroundColor = "#f8d7da";
+                        logoutMsg.style.color = "#721c24";
+                        logoutMsg.style.padding = "15px";
+                        logoutMsg.style.borderRadius = "5px";
+                        logoutMsg.style.boxShadow = "0 2px 10px rgba(0,0,0,0.1)";
+                        logoutMsg.style.zIndex = "1000";
+                        logoutMsg.style.transition = "opacity 0.5s";
                         
                         // Add countdown
                         let seconds = 5;
