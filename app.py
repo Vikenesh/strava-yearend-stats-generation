@@ -1146,14 +1146,14 @@ def get_stats_page():
                 // Initialize the inactivity timer
                 inactivityTime();
                 // Add interactive features
-                document.addEventListener('DOMContentLoaded', function() {{
+                document.addEventListener("DOMContentLoaded", function() {{
                     // Hide loading spinner
-                    document.getElementById('loading').style.display = "none";
+                    document.getElementById("loading").style.display = "none";
                     
                     // Add click handlers to table rows
-                    const rows = document.querySelectorAll('tbody tr');
+                    const rows = document.querySelectorAll("tbody tr");
                     rows.forEach(row => {{
-                        row.addEventListener('click', function() {{
+                        row.addEventListener("click", function() {{
                             // Highlight selected row
                             rows.forEach(r => r.style.background = "");
                             this.style.background = "linear-gradient(90deg, #e3f2fd, #ffffff)";
@@ -1161,24 +1161,24 @@ def get_stats_page():
                     }});
                     
                     // Add button hover effects
-                    const buttons = document.querySelectorAll('.copy-btn');
+                    const buttons = document.querySelectorAll(".copy-btn");
                     buttons.forEach(btn => {{
-                        btn.addEventListener('mouseenter', function() {{
+                        btn.addEventListener("mouseenter", function() {{
                             this.style.transform = "translateY(-2px) scale(1.05)";
                         }});
-                        btn.addEventListener('mouseleave', function() {{
+                        btn.addEventListener("mouseleave", function() {{
                             this.style.transform = "translateY(0) scale(1)";
                         }});
                     }});
                 }});
                 
                 function copyTableData() {{
-                    const table = document.getElementById('activityTable');
-                    const rows = table.getElementsByTagName('tr');
+                    const table = document.getElementById("activityTable");
+                    const rows = table.getElementsByTagName("tr");
                     let data = "Date,Activity,Distance (km),Time,Pace (min/km)\\n";
                     
                     for (let i = 1; i < rows.length; i++) {{
-                        const cells = rows[i].getElementsByTagName('td');
+                        const cells = rows[i].getElementsByTagName("td");
                         const rowData = [];
                         for (let j = 0; j < cells.length; j++) {{
                             rowData.push(cells[j].innerText);
