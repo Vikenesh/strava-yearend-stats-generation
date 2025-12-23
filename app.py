@@ -695,6 +695,112 @@ def analyze():
         logger.error(f"Error in analyze route: {str(e)}")
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
 
+@app.route('/generate-poster', methods=['GET', 'POST'])
+def generate_poster():
+    """Generate a visual poster using ChatGPT API"""
+    try:
+        if 'access_token' not in session:
+            return redirect('/login')
+            
+        if request.method == 'POST':
+            csv_data = request.form.get('csv_data', '')
+            
+            headers = {
+                'Authorization': f'Bearer {OPENAI_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            
+            poster_prompt = f"""Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
+- Total distance and time statistics
+- Monthly breakdowns with progress indicators
+- Fastest/longest run highlights
+- Consistency streaks and patterns
+- Fun personality insights (early bird vs night owl)
+- Motivational summary
+
+Use emojis, creative formatting, and make it shareable!
+
+Data:
+{csv_data}"""
+            
+            data = {
+                'model': 'gpt-3.5-turbo',
+                'messages': [
+                    {'role': 'system', 'content': 'You are a creative designer specializing in sports infographics and visual summaries.'},
+                    {'role': 'user', 'content': poster_prompt}
+                ],
+                'max_tokens': 1500,
+                'temperature': 0.8
+            }
+            
+            response = requests.post('https://api.openai.com/v1/chat/completions', 
+                                   headers=headers, 
+                                   json=data)
+            
+            if response.status_code == 200:
+                poster_content = response.json()['choices'][0]['message']['content']
+                return render_template_string('''
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Your Running Poster</title>
+                        <style>
+                            body { 
+                                font-family: Arial, sans-serif;
+                                background: #f0f2f5;
+                                padding: 20px;
+                            }
+                            .poster-container {
+                                max-width: 800px;
+                                margin: 0 auto;
+                                background: white;
+                                padding: 30px;
+                                border-radius: 10px;
+                                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                            }
+                            .poster-content {
+                                white-space: pre-wrap;
+                                font-family: monospace;
+                                background: #f8f9fa;
+                                padding: 20px;
+                                border-radius: 5px;
+                                border: 1px solid #ddd;
+                                line-height: 1.6;
+                            }
+                            .back-btn {
+                                display: inline-block;
+                                margin-top: 20px;
+                                padding: 10px 20px;
+                                background: #007bff;
+                                color: white;
+                                text-decoration: none;
+                                border-radius: 5px;
+                                border: none;
+                                cursor: pointer;
+                                font-size: 16px;
+                            }
+                            .back-btn:hover {
+                                background: #0056b3;
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="poster-container">
+                            <h1>Your 2025 Running Poster</h1>
+                            <div class="poster-content">{{ poster_content|safe }}</div>
+                            <button onclick="window.location.href='/'" class="back-btn">Back to Dashboard</button>
+                        </div>
+                    </body>
+                    </html>
+                ''', poster_content=poster_content)
+            else:
+                return f"Error generating poster: {response.text}"
+                
+        return redirect('/')
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 def get_stats_page():
     logger.info("get_stats_page called")
     try:
@@ -1040,6 +1146,7 @@ def get_stats_page():
             </style>
         </head>
         <body>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="container">
                 <div class="header">
                     <div>
@@ -1060,6 +1167,7 @@ def get_stats_page():
                     <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
                     <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
+                    <button class="copy-btn" onclick="generatePoster()" style="background: linear-gradient(135deg, #FF6B35, #F7931E);">Generate Poster</button>
                 </div>
                 
                 <div class="table-container">
@@ -1260,6 +1368,35 @@ ${csvData}`;
                     navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
                         alert("Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.");
                     }});
+                }}
+                
+                function generatePoster() {{
+                    // Get the CSV data
+                    const csvData = `{csv_data}`;
+                    
+                    // Create a form to submit the data
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = '/generate-poster';
+                    
+                    // Add CSRF token
+                    const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                    const csrfInput = document.createElement('input');
+                    csrfInput.type = 'hidden';
+                    csrfInput.name = 'csrf_token';
+                    csrfInput.value = csrfToken;
+                    form.appendChild(csrfInput);
+                    
+                    // Add CSV data
+                    const dataInput = document.createElement('input');
+                    dataInput.type = 'hidden';
+                    dataInput.name = 'csv_data';
+                    dataInput.value = csvData;
+                    form.appendChild(dataInput);
+                    
+                    // Submit the form
+                    document.body.appendChild(form);
+                    form.submit();
                 }}
             </script>
         </body>
