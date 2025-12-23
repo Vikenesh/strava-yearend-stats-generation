@@ -547,11 +547,11 @@ def get_stats_page():
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
         logger.info("Sorted runs by date (newest first)")
         
-        # Create table rows for 2025 runs only - limit to first 50 to avoid performance issues
+        # Create table rows for 2025 runs only - display all runs
         logger.info("Creating table rows for display")
         table_rows = ""
-        max_runs = min(50, len(runs_2025))  # Show max 50 runs
-        logger.info(f"Will display {max_runs} of {len(runs_2025)} runs")
+        max_runs = len(runs_2025)  # Display all runs
+        logger.info(f"Will display all {max_runs} runs")
         
         error_count = 0
         for i, run in enumerate(runs_2025[:max_runs]):
@@ -597,7 +597,7 @@ def get_stats_page():
         total_activities_count = len(activities)
         runs_2025_count = len(runs_2025)
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
-        display_info = f'<p><em>Showing first {max_runs} of {runs_2025_count} 2025 runs</em></p>' if runs_2025_count > max_runs else ''
+        display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
         
         # Pre-generate CSV data for JavaScript
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
