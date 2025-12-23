@@ -589,6 +589,10 @@ def get_stats_page():
         
         logger.info(f"Table generation completed with {error_count} errors")
         
+        # Ensure athlete_name is a clean string for template
+        athlete_name_display = str(athlete_name).strip()
+        logger.debug(f"athlete_name_display: {repr(athlete_name_display)}")
+        
         html_content = """
         <!DOCTYPE html>
         <html>
@@ -609,7 +613,7 @@ def get_stats_page():
         <body>
             <div class="header">
                 <div>
-                    <h1 class="title">{str(athlete_name).strip()}'s Year-End Running Summary - 2025</h1>
+                    <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
                     <div class="stats">
                         <p><strong>Total Activities (All Time):</strong> {len(activities)}</p>
                         <p><strong>2025 Runs:</strong> {len(runs_2025)}</p>
@@ -730,7 +734,7 @@ ${data}"
         </body>
         </html>
         """.format(
-            athlete_name=athlete_name,
+            athlete_name_display=athlete_name_display,
             activities=activities,
             runs_2025=runs_2025,
             table_rows=table_rows
