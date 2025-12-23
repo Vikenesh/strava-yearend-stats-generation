@@ -459,7 +459,7 @@ def analyze():
         
         token = session['access_token']
         athlete = session.get('athlete_info', {})
-        athlete_name = athlete.get('firstname', 'Athlete') + ' ' + athlete.get('lastname', '')
+        athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
         
         activities = get_all_activities(token)
         analysis = analyze_with_chatgpt(activities, athlete_name)
@@ -499,7 +499,7 @@ def get_stats_page():
         
         token = session['access_token']
         athlete = session.get('athlete_info', {})
-        athlete_name = athlete.get('firstname', 'Athlete') + ' ' + athlete.get('lastname', '')
+        athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
         
         activities = get_all_activities(token)
         
