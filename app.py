@@ -842,6 +842,28 @@ def get_stats_page():
                     padding: 30px;
                     background: white;
                     overflow-x: auto;
+                    max-height: 70vh;  /* 70% of viewport height */
+                    overflow-y: auto;
+                    position: relative;
+                    border-radius: 15px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+                }}
+                
+                /* Custom scrollbar for the table container */
+                .table-container::-webkit-scrollbar {{
+                    width: 8px;
+                    height: 8px;
+                }}
+                .table-container::-webkit-scrollbar-track {{
+                    background: #f1f1f1;
+                    border-radius: 0 0 15px 15px;
+                }}
+                .table-container::-webkit-scrollbar-thumb {{
+                    background: #888;
+                    border-radius: 4px;
+                }}
+                .table-container::-webkit-scrollbar-thumb:hover {{
+                    background: #555;
                 }}
                 
                 table {{ 
@@ -866,6 +888,15 @@ def get_stats_page():
                     position: sticky;
                     top: 0;
                     z-index: 10;
+                }}
+                
+                /* Ensure table header has a solid background when scrolling */
+                thead th {{
+                    position: sticky;
+                    top: 0;
+                    z-index: 20;
+                    background: #2c3e50;  /* Fallback solid color */
+                    background: linear-gradient(135deg, #2c3e50, #34495e);
                 }}
                 
                 td {{ 
@@ -897,6 +928,8 @@ def get_stats_page():
                     background: linear-gradient(90deg, #f8f9fa, #ffffff);
                     box-shadow: 0 5px 15px rgba(0,0,0,0.08);
                     transform: translateY(-1px);
+                    position: relative;
+                    z-index: 5;
                 }}
                 
                 .date-cell {{ 
