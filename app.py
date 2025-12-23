@@ -156,6 +156,33 @@ def refresh_access_token():
         logger.error(f"Error during token refresh: {str(e)}")
         return False
 
+def revoke_strava_access():
+    """Revoke the current user's access to Strava"""
+    if 'access_token' not in session:
+        return False
+        
+    try:
+        # Revoke access using Strava's deauthorization endpoint
+        # Note: According to Strava docs, only access_token is needed for deauthorization
+        response = requests.post('https://www.strava.com/oauth/deauthorize', data={
+            'access_token': session['access_token']
+        })
+        
+        logger.info(f"Strava deauthorize response: {response.status_code} - {response.text}")
+        
+        # Check if deauthorization was successful
+        if response.status_code == 200:
+            logger.info("Successfully deauthorized athlete from Strava")
+            return True
+        else:
+            logger.error(f"Failed to deauthorize. Status: {response.status_code}, Response: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error revoking Strava access: {str(e)}")
+        return False
+
+
 def get_valid_access_token():
     """Get a valid access token, refreshing if necessary"""
     # Check if we have a token
@@ -546,9 +573,54 @@ def callback_with_slash():
 
 @app.route('/logout')
 def logout():
-    logger.info("User logging out, clearing session")
+    """Log out the user, revoke access, and clear session data."""
+    try:
+        # Try to revoke access if token exists
+        if 'access_token' in session:
+            # Get the access token before clearing the session
+            access_token = session['access_token']
+            
+            # Make the deauthorization request with required parameters
+            response = requests.post('https://www.strava.com/oauth/deauthorize', data={
+                'access_token': access_token,
+                'client_id': CLIENT_ID,
+                'client_secret': CLIENT_SECRET
+            })
+            
+            if response.status_code == 200:
+                logger.info("Successfully revoked Strava access")
+            else:
+                logger.warning(f"Failed to revoke access. Status: {response.status_code}, Response: {response.text}")
+                
+    except Exception as e:
+        logger.error(f"Error during logout: {str(e)}")
+    
+    # Clear the session regardless of revoke success/failure
     session.clear()
-    return '<h1>Logged Out</h1><p><a href="/login">Login again</a></p>'
+    logger.info("User session cleared")
+    return redirect(url_for('index'))
+
+@app.route('/test-deauth')
+def test_deauth():
+    """Test route to check deauthorization endpoint"""
+    if 'access_token' not in session:
+        return '<h1>No Token</h1><p>Please login first. <a href="/login">Login</a></p>'
+    
+    try:
+        # Test the deauthorization endpoint
+        response = requests.post('https://www.strava.com/oauth/deauthorize', data={
+            'access_token': session['access_token']
+        })
+        
+        return f"""
+        <h1>Deauthorization Test</h1>
+        <p><strong>Status Code:</strong> {response.status_code}</p>
+        <p><strong>Response:</strong></p>
+        <pre>{response.text}</pre>
+        <p><a href="/">Back to Stats</a> | <a href="/logout">Logout</a></p>
+        """
+    except Exception as e:
+        return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
 
 @app.route('/token-status')
 def token_status():
@@ -645,6 +717,10 @@ def get_stats_page():
             logger.error("Failed to fetch activities due to authentication error")
             return redirect('/login')
         logger.info(f"Fetched {len(activities)} total activities")
+        
+        # Revoke access after successfully fetching data
+        logger.info("Revoking Strava access after fetching data")
+        revoke_strava_access()
         
         # Filter for runs only and 2025 only
         logger.info("Filtering for 2025 runs")
@@ -1005,6 +1081,60 @@ def get_stats_page():
             </div>
             
             <script>
+                // Auto-logout after 1 minute of inactivity
+                let inactivityTime = function() {
+                    let time;
+                    
+                    // Reset the timer on any of these events
+                    window.onload = resetTimer;
+                    document.onmousemove = resetTimer;
+                    document.onkeypress = resetTimer;
+                    
+                    function logout() {
+                        // Show a message before logging out
+                        const logoutMsg = document.createElement('div');
+                        logoutMsg.style.position = 'fixed';
+                        logoutMsg.style.bottom = '20px';
+                        logoutMsg.style.right = '20px';
+                        logoutMsg.style.backgroundColor = '#f8d7da';
+                        logoutMsg.style.color = '#721c24';
+                        logoutMsg.style.padding = '15px';
+                        logoutMsg.style.borderRadius = '5px';
+                        logoutMsg.style.boxShadow = '0 2px 10px rgba(0,0,0,0.1)';
+                        logoutMsg.style.zIndex = '1000';
+                        logoutMsg.style.transition = 'opacity 0.5s';
+                        
+                        // Add countdown
+                        let seconds = 5;
+                        logoutMsg.innerHTML = `You will be logged out in ${seconds} seconds...`;
+                        document.body.appendChild(logoutMsg);
+                        
+                        const countdown = setInterval(() => {
+                            seconds--;
+                            if (seconds <= 0) {
+                                clearInterval(countdown);
+                                logoutMsg.style.opacity = '0';
+                                setTimeout(() => {
+                                    window.location.href = '/logout';
+                                }, 500);
+                            } else {
+                                logoutMsg.innerHTML = `You will be logged out in ${seconds} seconds...`;
+                            }
+                        }, 1000);
+                    }
+                    
+                    function resetTimer() {
+                        clearTimeout(time);
+                        // 1 minute = 60000 milliseconds
+                        time = setTimeout(logout, 60000);
+                    }
+                    
+                    // Start the timer
+                    resetTimer();
+                };
+                
+                // Initialize the inactivity timer
+                inactivityTime();
                 // Add interactive features
                 document.addEventListener('DOMContentLoaded', function() {{
                     // Hide loading spinner
