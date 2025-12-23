@@ -1276,6 +1276,8 @@ ${{csvData}}`;
             </script>
         </body>
         </html>
+        """
+        
         # Simple string replacement to avoid formatting issues
         html_content = html_content.replace('{athlete_name_display}', str(athlete_name_display))
         html_content = html_content.replace('{total_activities_count}', str(total_activities_count))
