@@ -162,16 +162,17 @@ def revoke_strava_access():
         return False
         
     try:
-        # Try to refresh the token first to ensure it's valid
-        token = get_valid_access_token()
+        # Get the current access token (don't refresh it for deauthorization)
+        token = session.get('access_token')
         if not token:
-            logger.warning("Cannot get valid access token for deauthorization")
-            # Token is already invalid/expired, so we're effectively deauthorized
-            return True
+            logger.warning("No access token available for deauthorization")
+            return False
         
         # Revoke access using Strava's deauthorization endpoint
+        # According to Strava docs, we need access_token and client_id
         response = requests.post('https://www.strava.com/oauth/deauthorize', data={
-            'access_token': token
+            'access_token': token,
+            'client_id': CLIENT_ID
         })
         
         logger.info(f"Strava deauthorize response: {response.status_code} - {response.text}")
