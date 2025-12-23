@@ -532,6 +532,7 @@ def get_stats_page():
         athlete = session.get('athlete_info', {})
         athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
         logger.info(f"Generating stats page for athlete: {athlete_name}")
+        logger.debug(f"athlete_name type: {type(athlete_name)}, value: {repr(athlete_name)}")
         
         logger.info("Fetching all activities")
         activities = get_all_activities(token)
@@ -608,7 +609,7 @@ def get_stats_page():
         <body>
             <div class="header">
                 <div>
-                    <h1 class="title">{athlete_name.strip()}'s Year-End Running Summary - 2025</h1>
+                    <h1 class="title">{str(athlete_name).strip()}'s Year-End Running Summary - 2025</h1>
                     <div class="stats">
                         <p><strong>Total Activities (All Time):</strong> {len(activities)}</p>
                         <p><strong>2025 Runs:</strong> {len(runs_2025)}</p>
