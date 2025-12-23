@@ -1123,7 +1123,7 @@ def get_stats_page():
                             seconds--;
                             if (seconds <= 0) {
                                 clearInterval(countdown);
-                                logoutMsg.style.opacity = '0';
+                                logoutMsg.style.opacity = "0";
                                 setTimeout(() => {
                                     window.location.href = '/logout';
                                 }, 500);
@@ -1148,15 +1148,15 @@ def get_stats_page():
                 // Add interactive features
                 document.addEventListener('DOMContentLoaded', function() {{
                     // Hide loading spinner
-                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('loading').style.display = "none";
                     
                     // Add click handlers to table rows
                     const rows = document.querySelectorAll('tbody tr');
                     rows.forEach(row => {{
                         row.addEventListener('click', function() {{
                             // Highlight selected row
-                            rows.forEach(r => r.style.background = '');
-                            this.style.background = 'linear-gradient(90deg, #e3f2fd, #ffffff)';
+                            rows.forEach(r => r.style.background = "");
+                            this.style.background = "linear-gradient(90deg, #e3f2fd, #ffffff)";
                         }});
                     }});
                     
@@ -1164,10 +1164,10 @@ def get_stats_page():
                     const buttons = document.querySelectorAll('.copy-btn');
                     buttons.forEach(btn => {{
                         btn.addEventListener('mouseenter', function() {{
-                            this.style.transform = 'translateY(-2px) scale(1.05)';
+                            this.style.transform = "translateY(-2px) scale(1.05)";
                         }});
                         btn.addEventListener('mouseleave', function() {{
-                            this.style.transform = 'translateY(0) scale(1)';
+                            this.style.transform = "translateY(0) scale(1)";
                         }});
                     }});
                 }});
