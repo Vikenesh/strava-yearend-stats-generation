@@ -599,7 +599,37 @@ def get_stats_page():
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
         display_info = f'<p><em>Showing first {max_runs} of {runs_2025_count} 2025 runs</em></p>' if runs_2025_count > max_runs else ''
         
+        # Pre-generate CSV data for JavaScript
+        csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
+        for run in runs_2025[:max_runs]:
+            try:
+                date = run.get('start_date', 'N/A')[:10] if run.get('start_date') else 'N/A'
+                name = run.get('name', 'Unknown Activity').replace(',', ';')  # Replace commas to avoid CSV issues
+                distance = round(float(run.get('distance', 0)) / 1000, 2)
+                time_sec = int(run.get('moving_time', 0))
+                
+                if time_sec > 0:
+                    hours = time_sec // 3600
+                    minutes = (time_sec % 3600) // 60
+                    seconds = time_sec % 60
+                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    time_str = "00:00:00"
+                
+                if distance > 0:
+                    pace_min_per_km = time_sec / 60 / distance
+                    pace_min = int(pace_min_per_km)
+                    pace_sec = int((pace_min_per_km - pace_min) * 60)
+                    pace_str = f"{pace_min}:{pace_sec:02d}"
+                else:
+                    pace_str = "N/A"
+                
+                csv_data += f"{date},{name},{distance},{time_str},{pace_str}\\n"
+            except Exception as e:
+                continue
+        
         logger.debug(f"Template vars - total_activities: {total_activities_count}, runs_2025: {runs_2025_count}, other: {other_activities_count}")
+        logger.debug(f"Generated CSV data with {len(csv_data.split(chr(10)))} lines")
         
         html_content = """
         <!DOCTYPE html>
@@ -667,18 +697,7 @@ def get_stats_page():
                 }}
                 
                 function copyWithPrompts() {{
-                    const table = document.getElementById('activityTable');
-                    const rows = table.getElementsByTagName('tr');
-                    let data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n';
-                    
-                    for (let i = 1; i < rows.length; i++) {{
-                        const cells = rows[i].getElementsByTagName('td');
-                        const rowData = [];
-                        for (let j = 0; j < cells.length; j++) {{
-                            rowData.push(cells[j].innerText);
-                        }}
-                        data += rowData.join(',') + '\\n';
-                    }}
+                    const csvData = `{csv_data}`;
                     
                     const prompts = `
                     
@@ -692,7 +711,7 @@ PROMPT 1: Basic Analysis
 4. Recommendations for future training
 
 Data:
-${data}"
+${{csvData}}"
 
 PROMPT 2: Visual Poster Creation
 "Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
@@ -706,7 +725,7 @@ PROMPT 2: Visual Poster Creation
 Use emojis, creative formatting, and make it shareable!
 
 Data:
-${data}"
+${{csvData}}"
 
 PROMPT 3: Detailed Coaching Analysis
 "Act as a professional running coach and analyze this data comprehensively:
@@ -719,7 +738,7 @@ PROMPT 3: Detailed Coaching Analysis
 Provide actionable advice with specific metrics.
 
 Data:
-${data}"
+${{csvData}}"
 
 PROMPT 4: Social Media Summary
 "Create engaging social media captions for different platforms about this running journey:
@@ -731,7 +750,7 @@ PROMPT 4: Social Media Summary
 Make it inspiring and shareable!
 
 Data:
-${data}"
+${{csvData}}"
 `;
                     
                     navigator.clipboard.writeText(prompts.trim()).then(function() {{
@@ -747,6 +766,7 @@ ${data}"
             runs_2025_count=runs_2025_count,
             other_activities_count=other_activities_count,
             display_info=display_info,
+            csv_data=csv_data,
             activities=activities,
             runs_2025=runs_2025,
             table_rows=table_rows
