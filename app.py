@@ -6,7 +6,7 @@ from flask import Flask, request, redirect, session, url_for
 from collections import defaultdict, Counter
 import calendar
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,7 +26,7 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to IST timezone"""
     utc_dt = datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
-    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
     return ist_dt
 
 def analyze_wrapped_stats(activities):
@@ -84,7 +84,7 @@ def analyze_wrapped_stats(activities):
         max_streak = max(max_streak, temp_streak)
     
     # Check if current streak continues to today
-    today = datetime.now(datetime.timezone(timedelta(hours=5, minutes=30))).date()
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
     if dates and (today - dates[-1]).days <= 1:
         current_streak = temp_streak
     
@@ -668,7 +668,7 @@ def get_stats_page():
                 utc_date_str = run.get('start_date', 'N/A')
                 if utc_date_str and utc_date_str != 'N/A':
                     utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
-                    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
                     date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
                 else:
                     date = 'N/A'
@@ -723,7 +723,7 @@ def get_stats_page():
                 utc_date_str = run.get('start_date', 'N/A')
                 if utc_date_str and utc_date_str != 'N/A':
                     utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
-                    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
                     date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
                 else:
                     date = 'N/A'
