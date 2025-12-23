@@ -21,7 +21,13 @@ CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
+# Validate OpenAI API key
+if not OPENAI_API_KEY or OPENAI_API_KEY == 'your-openai-api-key-here':
+    logger.warning("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
+    # For development, you can set a default key here (remove in production)
+    # OPENAI_API_KEY = 'sk-your-actual-api-key-here'
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to IST timezone"""
@@ -704,6 +710,30 @@ def generate_poster():
             
         if request.method == 'POST':
             csv_data = request.form.get('csv_data', '')
+            
+            # Check if OpenAI API key is configured
+            if not OPENAI_API_KEY or OPENAI_API_KEY == 'your-openai-api-key-here':
+                return render_template_string('''
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Configuration Error</title>
+                        <style>
+                            body { font-family: Arial, sans-serif; padding: 20px; background: #f0f2f5; }
+                            .error-container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                            .error-title { color: #dc3545; margin-bottom: 20px; }
+                            .back-btn { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="error-container">
+                            <h1 class="error-title">OpenAI API Key Not Configured</h1>
+                            <p>The OpenAI API key is not properly configured. Please set the OPENAI_API_KEY environment variable in your Railway deployment settings.</p>
+                            <a href="/" class="back-btn">Back to Dashboard</a>
+                        </div>
+                    </body>
+                    </html>
+                ''')
             
             headers = {
                 'Authorization': f'Bearer {OPENAI_API_KEY}',
