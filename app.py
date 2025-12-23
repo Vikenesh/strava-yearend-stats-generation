@@ -380,7 +380,7 @@ def index():
                     font-size: 4rem;
                     font-weight: bold;
                     color: #ffffff;
-                    text-shadow: 3px 3px 6px rgba(0,0,0,0,0.3);
+                    text-shadow: 3px 3px 6px rgba(0,0,0,0.3);
                     margin-bottom: 1rem;
                     animation: glow 2s ease-in-out infinite alternate;
                 }}
