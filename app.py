@@ -1206,7 +1206,7 @@ PROMPT 1: Basic Analysis
 4. Recommendations for future training
 
 Data:
-${{csvData}}"
+${csvData}"
 
 PROMPT 2: Visual Poster Creation
 "Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
@@ -1220,7 +1220,7 @@ PROMPT 2: Visual Poster Creation
 Use emojis, creative formatting, and make it shareable!
 
 Data:
-${{csvData}}"
+${csvData}"
 
 PROMPT 3: Detailed Coaching Analysis
 "Act as a professional running coach and analyze this data comprehensively:
@@ -1233,7 +1233,7 @@ PROMPT 3: Detailed Coaching Analysis
 Provide actionable advice with specific metrics.
 
 Data:
-${{csvData}}"
+${csvData}"
 
 PROMPT 4: Social Media Summary
 "Create engaging social media captions for different platforms about this running journey:
@@ -1245,7 +1245,7 @@ PROMPT 4: Social Media Summary
 Make it inspiring and shareable!
 
 Data:
-${{csvData}}"
+${csvData}"
 `;
                     
                     navigator.clipboard.writeText(prompts.trim()).then(function() {{
