@@ -324,7 +324,7 @@ def index():
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Strava Year-End Running Summary 2025</title>
+            <title>Year-End Running Summary for Strava - 2025</title>
             <style>
                 * {
                     margin: 0;
@@ -759,7 +759,7 @@ def get_stats_page():
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Strava Year-End Running Summary - 2025</title>
+            <title>Your 2025 Year-End Running Summary for Strava</title>
             <style>
                 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                 
