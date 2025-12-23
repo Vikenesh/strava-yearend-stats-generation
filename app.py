@@ -168,8 +168,8 @@ def revoke_strava_access():
             logger.warning("No access token available for deauthorization")
             return False
         
-        # Revoke access using Strava's deauthorization endpoint
-        # According to Strava docs, we need access_token and client_id
+        # Revoke access using Strava's revoke_app_access endpoint
+        # This is the correct endpoint for revoking app access
         response = requests.post('https://www.strava.com/oauth/deauthorize', data={
             'access_token': token,
             'client_id': CLIENT_ID
@@ -586,22 +586,9 @@ def callback_with_slash():
 def logout():
     """Log out the user, revoke access, and clear session data."""
     try:
-        # Try to revoke access if token exists
-        if 'access_token' in session:
-            # Get the access token before clearing the session
-            access_token = session['access_token']
-            
-            # Make the deauthorization request with required parameters
-            response = requests.post('https://www.strava.com/oauth/deauthorize', data={
-                'access_token': access_token,
-                'client_id': CLIENT_ID,
-                'client_secret': CLIENT_SECRET
-            })
-            
-            if response.status_code == 200:
-                logger.info("Successfully revoked Strava access")
-            else:
-                logger.warning(f"Failed to revoke access. Status: {response.status_code}, Response: {response.text}")
+        # Use the centralized revoke_strava_access function
+        revoke_strava_access()
+        logger.info("Logout process completed")
                 
     except Exception as e:
         logger.error(f"Error during logout: {str(e)}")
