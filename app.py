@@ -666,6 +666,7 @@ def get_stats_page():
             
             <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
             <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
+            <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
             
             <table id="activityTable">
                 <thead>
@@ -755,6 +756,27 @@ ${{csvData}}"
                     
                     navigator.clipboard.writeText(prompts.trim()).then(function() {{
                         alert('Data and analysis prompts copied! You now have 4 ready-to-use prompts for ChatGPT along with your running data.');
+                    }});
+                }}
+                
+                function copyPosterPrompt() {{
+                    const csvData = `{csv_data}`;
+                    
+                    const posterPrompt = `Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
+- Total distance and time statistics
+- Monthly breakdowns with progress indicators
+- Fastest/longest run highlights
+- Consistency streaks and patterns
+- Fun personality insights (early bird vs night owl)
+- Motivational summary
+
+Use emojis, creative formatting, and make it shareable!
+
+Data:
+${{csvData}}`;
+                    
+                    navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
+                        alert('Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.');
                     }});
                 }}
             </script>
