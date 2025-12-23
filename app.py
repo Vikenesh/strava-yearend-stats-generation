@@ -1,12 +1,15 @@
-from flask import Flask, redirect, request, session
-import requests
-import time
-import datetime
-import json
 import os
-from datetime import datetime as dt, timezone
+import requests
+import json
+import logging
+from flask import Flask, request, redirect, session, url_for
 from collections import defaultdict, Counter
+import datetime
 import calendar
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
@@ -21,15 +24,17 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to IST timezone"""
-    utc_dt = dt.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
-    ist_dt = utc_dt.astimezone(timezone(datetime.timedelta(hours=5, minutes=30)))
+    utc_dt = datetime.datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
+    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
     return ist_dt
 
 def analyze_wrapped_stats(activities):
     """Analyze activities for wrapped-style visualization"""
+    logger.info("analyze_wrapped_stats called")
     runs = [a for a in activities if a['type'] == 'Run']
     
     if not runs:
+        logger.info("No runs found")
         return None
     
     # Convert all dates to IST
@@ -78,7 +83,7 @@ def analyze_wrapped_stats(activities):
         max_streak = max(max_streak, temp_streak)
     
     # Check if current streak continues to today
-    today = dt.now(timezone(datetime.timedelta(hours=5, minutes=30))).date()
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).date()
     if dates and (today - dates[-1]).days <= 1:
         current_streak = temp_streak
     
@@ -86,6 +91,7 @@ def analyze_wrapped_stats(activities):
     day_counts = Counter(run['ist_date'].strftime('%A') for run in ist_runs)
     favorite_day = day_counts.most_common(1)[0] if day_counts else ('None', 0)
     
+    logger.info("Analysis completed")
     return {
         'total_distance': round(total_distance, 2),
         'total_time_hours': round(total_time / 3600, 1),
@@ -113,118 +119,130 @@ def analyze_wrapped_stats(activities):
     }
 
 def get_all_activities(token):
+    logger.info("get_all_activities called")
     headers = {'Authorization': f'Bearer {token}'}
     all_activities = []
     page = 1
     
-    print("Fetching activities...")
+    logger.info("Fetching activities...")
     while True:
         url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
+        logger.debug(f"Fetching page {page}")
         response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
-            print(f"Error fetching page {page}: {response.status_code}")
+            logger.error(f"Error fetching page {page}: {response.status_code}")
             break
             
         try:
             data = response.json()
         except Exception as e:
-            print(f"Error parsing JSON: {e}")
+            logger.error(f"Error parsing JSON: {e}")
             break
         
         if not data:  # No more activities
-            print(f"Fetched {len(all_activities)} total activities from {page-1} pages")
+            logger.info(f"Fetched {len(all_activities)} total activities from {page-1} pages")
             break
             
         all_activities.extend(data)
-        print(f"Fetched page {page}, got {len(data)} activities, total so far: {len(all_activities)}")
+        logger.info(f"Fetched page {page}, got {len(data)} activities, total so far: {len(all_activities)}")
         page += 1
         
         # Safety check to prevent infinite loops
         if page > 10:
-            print("Safety limit reached, stopping fetch")
+            logger.warning("Safety limit reached, stopping fetch")
             break
     
+    logger.info(f"Total activities fetched: {len(all_activities)}")
     return all_activities
 
 def analyze_with_chatgpt(activities, athlete_name):
-    """Send Strava data to ChatGPT for analysis"""
-    if OPENAI_API_KEY == 'your-openai-api-key-here':
-        return "OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
-    
-    # Prepare data for ChatGPT
-    runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
-    
-    # Create summary data
-    summary = {
-        'athlete': athlete_name,
-        'total_runs': len(runs_2025),
-        'total_distance': round(sum(a['distance'] / 1000 for a in runs_2025), 2),
-        'recent_runs': []
-    }
-    
-    # Add recent 10 runs for detailed analysis
-    for run in runs_2025[:10]:
-        summary['recent_runs'].append({
-            'date': run['start_date'][:10],
-            'name': run['name'],
-            'distance_km': round(run['distance'] / 1000, 2),
-            'time_minutes': run['moving_time'] // 60,
-            'pace_min_per_km': round((run['moving_time'] / 60) / (run['distance'] / 1000), 2)
-        })
-    
-    # Create prompt for ChatGPT
-    prompt = f"""
-    Analyze this 2025 running data for {athlete_name}:
-    
-    Summary: {json.dumps(summary, indent=2)}
-    
-    Please provide:
-    1. Performance insights and trends
-    2. Training recommendations
-    3. Goal setting suggestions
-    4. Notable achievements
-    5. Areas for improvement
-    
-    Format the response in a clear, encouraging way suitable for an athlete.
-    """
-    
+    """Analyze activities using ChatGPT API"""
+    logger.info(f"analyze_with_chatgpt called for {len(activities)} activities")
     try:
-        headers = {
-            'Authorization': f'Bearer {OPENAI_API_KEY}',
-            'Content-Type': 'application/json'
+        # Filter for 2025 runs only
+        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
+        logger.info(f"Processing {len(runs_2025)} runs from 2025")
+        
+        # Prepare data for ChatGPT
+        summary = {
+            'athlete': athlete_name,
+            'total_runs': len(runs_2025),
+            'total_distance': round(sum(a['distance'] / 1000 for a in runs_2025), 2),
+            'recent_runs': []
         }
         
-        data = {
-            'model': 'gpt-3.5-turbo',
-            'messages': [
-                {'role': 'system', 'content': 'You are a helpful running coach and data analyst.'},
-                {'role': 'user', 'content': prompt}
-            ],
-            'max_tokens': 1000,
-            'temperature': 0.7
-        }
+        # Add recent 10 runs for detailed analysis
+        for run in runs_2025[:10]:
+            summary['recent_runs'].append({
+                'date': run['start_date'][:10],
+                'name': run['name'],
+                'distance_km': round(run['distance'] / 1000, 2),
+                'time_minutes': run['moving_time'] // 60,
+                'pace_min_per_km': round((run['moving_time'] / 60) / (run['distance'] / 1000), 2)
+            })
         
-        response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
+        # Create prompt for ChatGPT
+        prompt = f"""
+        Analyze this 2025 running data for {athlete_name}:
         
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        else:
-            return f"OpenAI API Error: {response.status_code} - {response.text}"
+        Summary: {json.dumps(summary, indent=2)}
+        
+        Please provide:
+        1. Performance insights and trends
+        2. Training recommendations
+        3. Goal setting suggestions
+        4. Notable achievements
+        5. Areas for improvement
+        
+        Format the response in a clear, encouraging way suitable for an athlete.
+        """
+        
+        try:
+            headers = {
+                'Authorization': f'Bearer {OPENAI_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            
+            data = {
+                'model': 'gpt-3.5-turbo',
+                'messages': [
+                    {'role': 'system', 'content': 'You are a helpful running coach and data analyst.'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                'max_tokens': 1000,
+                'temperature': 0.7
+            }
+            
+            response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
+            logger.info(f"OpenAI API response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()['choices'][0]['message']['content']
+                logger.info("Successfully received analysis from OpenAI")
+                return result
+            else:
+                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+                return f"OpenAI API Error: {response.status_code} - {response.text}"
+                
+        except Exception as e:
+            logger.error(f"Error calling OpenAI API: {str(e)}")
+            return f"Error calling OpenAI API: {str(e)}"
             
     except Exception as e:
-        return f"Error calling OpenAI API: {str(e)}"
+        logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
+        return f"Error in analyze_with_chatgpt: {str(e)}"
 
 @app.route('/')
 def index():
-    print(f"DEBUG: Index route accessed")
-    print(f"DEBUG: Session keys: {list(session.keys())}")
+    logger.info("Index route accessed")
+    logger.debug(f"Session keys: {list(session.keys())}")
     
     if 'access_token' in session:
-        print(f"DEBUG: User is logged in, showing stats page")
+        logger.info("User is logged in, showing stats page")
         return get_stats_page()
     else:
-        print(f"DEBUG: User not logged in, showing login page")
+        logger.info("User not logged in, showing login page")
         return '''
         <!DOCTYPE html>
         <html>
@@ -384,12 +402,12 @@ def index():
 
 @app.route('/login')
 def login():
-    print(f"DEBUG: Login route accessed")
-    print(f"DEBUG: CLIENT_ID = {CLIENT_ID}")
-    print(f"DEBUG: REDIRECT_URI = {REDIRECT_URI}")
+    logger.info("Login route accessed")
+    logger.debug(f"CLIENT_ID = {CLIENT_ID}")
+    logger.debug(f"REDIRECT_URI = {REDIRECT_URI}")
     auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
-    print(f"DEBUG: Full auth URL = {auth_url}")
-    print(f"DEBUG: Redirecting to Strava OAuth...")
+    logger.debug(f"Full auth URL = {auth_url}")
+    logger.info("Redirecting to Strava OAuth...")
     return redirect(auth_url)
 
 @app.route('/test')
@@ -398,21 +416,21 @@ def test():
 
 @app.route('/callback')
 def callback():
-    print(f"DEBUG: Callback route accessed")
-    print(f"DEBUG: Request args: {dict(request.args)}")
+    logger.info("Callback route accessed")
+    logger.debug(f"Request args: {dict(request.args)}")
     
     code = request.args.get('code')
     error = request.args.get('error')
     
     if error:
-        print(f"DEBUG: OAuth error: {error}")
+        logger.error(f"OAuth error: {error}")
         return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
     
     if not code:
-        print(f"DEBUG: No authorization code received")
+        logger.error("No authorization code received")
         return '<h1>Error</h1><p>No authorization code received</p><p><a href="/">Back to home</a></p>'
     
-    print(f"DEBUG: Received authorization code: {code[:10]}...")
+    logger.info(f"Received authorization code: {code[:10]}...")
     
     token_data = {
         'client_id': CLIENT_ID,
@@ -421,28 +439,28 @@ def callback():
         'grant_type': 'authorization_code'
     }
     
-    print(f"DEBUG: Requesting access token...")
+    logger.info("Requesting access token...")
     response = requests.post('https://www.strava.com/oauth/token', data=token_data)
     
-    print(f"DEBUG: Token response status: {response.status_code}")
-    print(f"DEBUG: Token response: {response.text[:200]}...")
+    logger.info(f"Token response status: {response.status_code}")
+    logger.debug(f"Token response: {response.text[:200]}...")
     
     if response.status_code != 200:
-        print(f"DEBUG: Token exchange failed")
+        logger.error("Token exchange failed")
         return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p><p><a href="/">Back to home</a></p>'
     
     token_response = response.json()
     session['access_token'] = token_response['access_token']
     session['athlete_info'] = token_response.get('athlete', {})
     
-    print(f"DEBUG: Successfully obtained access token")
-    print(f"DEBUG: Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
+    logger.info("Successfully obtained access token")
+    logger.info(f"Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
     
     return redirect('/')
 
 @app.route('/callback/')
 def callback_with_slash():
-    print(f"DEBUG: Callback with slash route accessed")
+    logger.info("Callback with slash route accessed")
     return "Callback with slash works!"
 
 @app.route('/logout')
@@ -453,16 +471,25 @@ def logout():
 @app.route('/analyze')
 def analyze():
     """Route to analyze data with ChatGPT"""
+    logger.info("Analyze route accessed")
     try:
         if 'access_token' not in session:
+            logger.warning("No access token in session, redirecting to login")
             return redirect('/login')
         
+        logger.info("User has access token, proceeding with analysis")
         token = session['access_token']
         athlete = session.get('athlete_info', {})
         athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
+        logger.info(f"Analyzing data for athlete: {athlete_name}")
         
+        logger.info("Fetching activities for analysis")
         activities = get_all_activities(token)
+        logger.info(f"Fetched {len(activities)} total activities for analysis")
+        
+        logger.info("Calling ChatGPT API for analysis")
         analysis = analyze_with_chatgpt(activities, athlete_name)
+        logger.info("ChatGPT analysis completed")
         
         return f"""
         <!DOCTYPE html>
@@ -489,30 +516,43 @@ def analyze():
         </html>
         """
     except Exception as e:
+        logger.error(f"Error in analyze route: {str(e)}")
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
 
 def get_stats_page():
+    logger.info("get_stats_page called")
     try:
         # Get token from session
         if 'access_token' not in session:
+            logger.warning("No access token in session, redirecting to login")
             return redirect('/login')
         
+        logger.info("User has access token, fetching stats")
         token = session['access_token']
         athlete = session.get('athlete_info', {})
         athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
+        logger.info(f"Generating stats page for athlete: {athlete_name}")
         
+        logger.info("Fetching all activities")
         activities = get_all_activities(token)
+        logger.info(f"Fetched {len(activities)} total activities")
         
         # Filter for runs only and 2025 only
+        logger.info("Filtering for 2025 runs")
         runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
+        logger.info(f"Found {len(runs_2025)} runs from 2025")
         
         # Sort by date (newest first)
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
+        logger.info("Sorted runs by date (newest first)")
         
         # Create table rows for 2025 runs only - limit to first 50 to avoid performance issues
+        logger.info("Creating table rows for display")
         table_rows = ""
         max_runs = min(50, len(runs_2025))  # Show max 50 runs
+        logger.info(f"Will display {max_runs} of {len(runs_2025)} runs")
         
+        error_count = 0
         for i, run in enumerate(runs_2025[:max_runs]):
             try:
                 date = run.get('start_date', 'N/A')[:10] if run.get('start_date') else 'N/A'
@@ -541,8 +581,12 @@ def get_stats_page():
                 table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
             except Exception as e:
                 # Skip problematic rows but continue
+                logger.error(f"Error processing run {i}: {str(e)}")
+                error_count += 1
                 table_rows += f"<tr><td>Error</td><td>Error in data</td><td>-</td><td>-</td><td>-</td></tr>"
                 continue
+        
+        logger.info(f"Table generation completed with {error_count} errors")
         
         html_content = """
         <!DOCTYPE html>
@@ -694,10 +738,12 @@ ${data}"
         return html_content
         
     except Exception as e:
+        logger.error(f"Error in get_stats_page: {str(e)}")
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
 
 if __name__ == '__main__':
-    print("Starting Flask app...")
-    print(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
+    logger.info("Starting Flask app...")
+    logger.info(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
     port = int(os.environ.get('PORT', 5000))
+    logger.info(f"Starting on port {port}")
     app.run(host='0.0.0.0', port=port)
