@@ -1175,7 +1175,7 @@ def get_stats_page():
                 function copyTableData() {{
                     const table = document.getElementById('activityTable');
                     const rows = table.getElementsByTagName('tr');
-                    let data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n';
+                    let data = "Date,Activity,Distance (km),Time,Pace (min/km)\\n";
                     
                     for (let i = 1; i < rows.length; i++) {{
                         const cells = rows[i].getElementsByTagName('td');
@@ -1183,11 +1183,11 @@ def get_stats_page():
                         for (let j = 0; j < cells.length; j++) {{
                             rowData.push(cells[j].innerText);
                         }}
-                        data += rowData.join(',') + '\\n';
+                        data += rowData.join(",") + "\\n";
                     }}
                     
                     navigator.clipboard.writeText(data).then(function() {{
-                        alert('2025 running data copied to clipboard! You can now paste this into ChatGPT for poster generation.');
+                        alert("2025 running data copied to clipboard! You can now paste this into ChatGPT for poster generation.");
                     }});
                 }}
                 
