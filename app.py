@@ -2,28 +2,60 @@ import os
 import requests
 import json
 import logging
-from flask import Flask, request, redirect, session, url_for
-from collections import defaultdict, Counter
-import calendar
+from flask import Flask, session, redirect, request, url_for, render_template_string, flash
+import requests
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import os
+import logging
+from dotenv import load_dotenv
+import json
+from flask import jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, User
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Load environment variables
+load_dotenv()
+
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key')
 
-# Strava API credentials from environment variables
-CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '130483')
-CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106ca532d1bc428088e')
-REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///strava_users.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# OpenAI API settings
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+# Initialize extensions
+db.init_app(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
 
-# Validate OpenAI API key
+# Strava API credentials
+CLIENT_ID = os.getenv('STRAVA_CLIENT_ID')
+CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
+REDIRECT_URI = os.getenv('STRAVA_REDIRECT_URI')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
+# Ensure required environment variables are set
+required_vars = ['STRAVA_CLIENT_ID', 'STRAVA_CLIENT_SECRET', 'STRAVA_REDIRECT_URI']
+for var in required_vars:
+    if not os.getenv(var):
+        logger.warning(f'Warning: {var} environment variable is not set')
+
+# Login manager setup
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Create database tables
+with app.app_context():
+    db.create_all()
 if not OPENAI_API_KEY or OPENAI_API_KEY == 'your-openai-api-key-here':
     logger.warning("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
     # For development, you can set a default key here (remove in production)
@@ -125,24 +157,18 @@ def analyze_wrapped_stats(activities):
         'ist_runs': ist_runs
     }
 
-def refresh_access_token():
-    """Refresh the access token using the refresh token"""
-    logger.info("Attempting to refresh access token")
-    
-    refresh_token = session.get('refresh_token')
-    if not refresh_token:
-        logger.error("No refresh token available")
-        return False
-    
-    token_data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'refresh_token',
-        'refresh_token': refresh_token
-    }
+def refresh_user_token(user):
+    """Refresh the access token for a user using their refresh token"""
+    logger.info(f"Attempting to refresh access token for user {user.id}")
     
     try:
-        response = requests.post('https://www.strava.com/oauth/token', data=token_data)
+        response = requests.post('https://www.strava.com/oauth/token', data={
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+            'grant_type': 'refresh_token',
+            'refresh_token': user.refresh_token
+        })
+        
         logger.info(f"Token refresh response status: {response.status_code}")
         
         if response.status_code != 200:
@@ -150,12 +176,15 @@ def refresh_access_token():
             return False
         
         token_response = response.json()
-        session['access_token'] = token_response['access_token']
-        session['refresh_token'] = token_response.get('refresh_token', refresh_token)  # Update if new one provided
-        session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)
+        
+        # Update user's tokens and expiration
+        user.access_token = token_response['access_token']
+        user.refresh_token = token_response.get('refresh_token', user.refresh_token)
+        user.token_expires_at = datetime.utcfromtimestamp(time.time() + token_response.get('expires_in', 21600))
+        db.session.commit()
         
         logger.info("Token refreshed successfully")
-        logger.info(f"New token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
+        logger.info(f"New token expires at: {user.token_expires_at}")
         return True
         
     except Exception as e:
@@ -200,56 +229,66 @@ def revoke_strava_access():
         return False
 
 
-def get_valid_access_token():
-    """Get a valid access token, refreshing if necessary"""
-    # Check if we have a token
-    if 'access_token' not in session:
-        logger.warning("No access token in session")
+def get_valid_user_token(user):
+    """Get a valid access token for a user, refreshing if necessary"""
+    if not user or not user.access_token:
+        logger.warning("No user or access token found")
         return None
     
     # Check if token is still valid (with 5-minute buffer)
-    expires_at = session.get('token_expires_at', 0)
-    if time.time() < expires_at - 300:  # 5 minute buffer
-        logger.debug("Access token is still valid")
-        return session['access_token']
+    if datetime.utcnow() < user.token_expires_at - timedelta(minutes=5):
+        logger.debug("User token is still valid")
+        return user.access_token
     
     # Token is expired, try to refresh
-    logger.info("Access token expired, attempting refresh")
-    if refresh_access_token():
-        return session['access_token']
+    logger.info("User token expired, attempting refresh")
+    if refresh_user_token(user):
+        return user.access_token
     else:
-        logger.error("Failed to refresh token, user needs to re-authenticate")
+        logger.error("Failed to refresh user token, reauthentication required")
         return None
 
-def get_all_activities():
-    logger.info("get_all_activities called")
+def get_user_activities(user, per_page=200):
+    """Fetch all activities for the specified user"""
+    if not user:
+        logger.error("No user provided")
+        return None
     
     # Get valid token (will refresh if needed)
-    token = get_valid_access_token()
+    token = get_valid_user_token(user)
     if not token:
-        logger.error("No valid access token available")
+        logger.error("No valid access token available for user")
         return None
     
     headers = {'Authorization': f'Bearer {token}'}
     all_activities = []
     page = 1
     
-    logger.info("Fetching activities...")
+    logger.info(f"Fetching activities for user {user.id}...")
     while True:
-        url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
-        logger.debug(f"Fetching page {page}")
-        response = requests.get(url, headers=headers)
-        
-        # Handle 401/403 errors - try token refresh
-        if response.status_code in [401, 403]:
-            logger.warning(f"Authentication error ({response.status_code}), attempting token refresh")
-            if refresh_access_token():
-                token = session['access_token']
-                headers = {'Authorization': f'Bearer {token}'}
-                response = requests.get(url, headers=headers)
-            else:
-                logger.error("Token refresh failed, cannot fetch activities")
-                return None
+        try:
+            url = 'https://www.strava.com/api/v3/athlete/activities'
+            params = {'page': page, 'per_page': per_page}
+            logger.debug(f"Fetching page {page}")
+            
+            response = requests.get(url, headers=headers, params=params)
+            
+            # Handle 401/403 errors - try token refresh
+            if response.status_code in [401, 403]:
+                logger.warning(f"Authentication error ({response.status_code}), attempting token refresh")
+                if refresh_user_token(user):
+                    token = user.access_token
+                    headers = {'Authorization': f'Bearer {token}'}
+                    continue  # Retry the same page with new token
+                else:
+                    logger.error("Token refresh failed, cannot fetch activities")
+                    return None
+                    
+            response.raise_for_status()  # This will raise an HTTPError for 4XX/5XX responses
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching activities: {str(e)}")
+            break
         
         if response.status_code != 200:
             logger.error(f"Error fetching page {page}: {response.status_code}")
@@ -523,12 +562,20 @@ def index():
 
 @app.route('/login')
 def login():
+    """Initiate the Strava OAuth flow"""
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+        
     logger.info("Login route accessed")
-    logger.debug(f"CLIENT_ID = {CLIENT_ID}")
-    logger.debug(f"REDIRECT_URI = {REDIRECT_URI}")
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
-    logger.debug(f"Full auth URL = {auth_url}")
-    logger.info("Redirecting to Strava OAuth...")
+    auth_url = (
+        f'https://www.strava.com/oauth/authorize?'
+        f'client_id={CLIENT_ID}'
+        '&response_type=code'
+        f'&redirect_uri={REDIRECT_URI}'
+        '&scope=read,activity:read_all,profile:read_all'
+        '&approval_prompt=force'
+    )
+    logger.debug(f"Redirecting to Strava OAuth: {auth_url}")
     return redirect(auth_url)
 
 @app.route('/test')
@@ -537,51 +584,73 @@ def test():
 
 @app.route('/callback')
 def callback():
+    """Handle the OAuth callback from Strava"""
     logger.info("Callback route accessed")
-    logger.debug(f"Request args: {dict(request.args)}")
     
     code = request.args.get('code')
     error = request.args.get('error')
     
     if error:
         logger.error(f"OAuth error: {error}")
-        return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
+        flash(f"Authorization error: {error}", 'error')
+        return redirect(url_for('login'))
     
     if not code:
         logger.error("No authorization code received")
-        return '<h1>Error</h1><p>No authorization code received</p><p><a href="/">Back to home</a></p>'
+        flash("No authorization code received from Strava", 'error')
+        return redirect(url_for('login'))
     
-    logger.info(f"Received authorization code: {code[:10]}...")
+    logger.info("Exchanging authorization code for tokens...")
     
-    token_data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'code': code,
-        'grant_type': 'authorization_code'
-    }
-    
-    logger.info("Requesting access token...")
-    response = requests.post('https://www.strava.com/oauth/token', data=token_data)
-    
-    logger.info(f"Token response status: {response.status_code}")
-    logger.debug(f"Token response: {response.text[:200]}...")
-    
-    if response.status_code != 200:
-        logger.error("Token exchange failed")
-        return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p><p><a href="/">Back to home</a></p>'
-    
-    token_response = response.json()
-    session['access_token'] = token_response['access_token']
-    session['refresh_token'] = token_response.get('refresh_token')
-    session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)  # Default 6 hours
-    session['athlete_info'] = token_response.get('athlete', {})
-    
-    logger.info("Successfully obtained access token")
-    logger.info(f"Token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
-    logger.info(f"Refresh token available: {'Yes' if session.get('refresh_token') else 'No'}")
-    logger.info(f"Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
-    
-    return redirect('/')
+    try:
+        # Exchange authorization code for tokens
+        response = requests.post('https://www.strava.com/oauth/token', data={
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+            'code': code,
+            'grant_type': 'authorization_code'
+        })
+        
+        if response.status_code != 200:
+            logger.error(f"Token exchange failed: {response.status_code} - {response.text}")
+            flash("Failed to authenticate with Strava. Please try again.", 'error')
+            return redirect(url_for('login'))
+        
+        token_data = response.json()
+        athlete = token_data.get('athlete', {})
+        
+        # Check if user exists, if not create a new one
+        user = User.query.filter_by(strava_id=athlete.get('id')).first()
+        
+        if not user:
+            user = User(
+                strava_id=athlete.get('id'),
+                firstname=athlete.get('firstname', ''),
+                lastname=athlete.get('lastname', ''),
+                profile_medium=athlete.get('profile_medium', '')
+            )
+            db.session.add(user)
+        
+        # Update user tokens and info
+        user.access_token = token_data['access_token']
+        user.refresh_token = token_data.get('refresh_token', user.refresh_token)
+        user.token_expires_at = datetime.utcfromtimestamp(
+            time.time() + token_data.get('expires_in', 21600)
+        )
+        
+        db.session.commit()
+        
+        # Log the user in
+        login_user(user)
+        logger.info(f"User {user.id} logged in successfully")
+        
+        flash("Successfully connected to Strava!", 'success')
+        return redirect(url_for('dashboard'))
+        
+    except Exception as e:
+        logger.error(f"Error in callback: {str(e)}")
+        flash("An error occurred during authentication. Please try again.", 'error')
+        return redirect(url_for('login'))
 
 @app.route('/callback/')
 def callback_with_slash():
