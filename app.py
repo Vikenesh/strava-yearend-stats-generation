@@ -482,7 +482,8 @@ def login():
     logger.info("Login route accessed")
     logger.debug(f"CLIENT_ID = {CLIENT_ID}")
     logger.debug(f"REDIRECT_URI = {REDIRECT_URI}")
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
+    ##auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
+    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
     logger.debug(f"Full auth URL = {auth_url}")
     logger.info("Redirecting to Strava OAuth...")
     return redirect(auth_url)
