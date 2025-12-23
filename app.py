@@ -1,33 +1,67 @@
-import os
-import requests
+"""
+Strava Year-End Run Summary Application
+
+This application provides a summary of Strava running activities with visualizations.
+"""
 import json
 import logging
-from flask import Flask, request, redirect, session, url_for
-from collections import defaultdict, Counter
-import calendar
+import os
 import time
+from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
+from flask import Flask, request, redirect, session, url_for
+import requests
+
+# Application Configuration
+# ======================
+
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
 
+# API Configuration
+# ----------------
 # Strava API credentials from environment variables
-CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '130483')
-CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106ca532d1bc428088e')
+CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '97523')
+CLIENT_SECRET = os.environ.get(
+    'STRAVA_CLIENT_SECRET',
+    '71237e6f5f32982cc16c6056e9fb78c2c246d102'
+)
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
 
+# Constants
+# --------
+TOKEN_REFRESH_BUFFER = 300  # 5 minutes buffer for token refresh
+TOKEN_EXPIRY_BUFFER = 300  # 5 minutes buffer for token expiry
+ACTIVITIES_PER_PAGE = 200  # Max activities per page from Strava API
+
 def utc_to_ist(utc_datetime_str):
-    """Convert UTC datetime string to IST timezone"""
-    utc_dt = datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
-    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-    return ist_dt
+    """Convert UTC datetime string to Indian Standard Time (IST) timezone.
+
+    Args:
+        utc_datetime_str (str): UTC datetime string in ISO format.
+
+    Returns:
+        datetime: Datetime object converted to IST timezone.
+    """
+    try:
+        utc_dt = datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
+        ist_timezone = timezone(timedelta(hours=5, minutes=30))
+        return utc_dt.astimezone(ist_timezone)
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error converting datetime: {e}")
+        return None
 
 def analyze_wrapped_stats(activities):
     """Analyze activities for wrapped-style visualization"""
@@ -120,62 +154,82 @@ def analyze_wrapped_stats(activities):
     }
 
 def refresh_access_token():
-    """Refresh the access token using the refresh token"""
+    """Refresh the Strava access token using the refresh token.
+
+    Returns:
+        bool: True if token was refreshed successfully, False otherwise.
+    """
     logger.info("Attempting to refresh access token")
-    
+
     refresh_token = session.get('refresh_token')
     if not refresh_token:
-        logger.error("No refresh token available")
+        logger.error("No refresh token available in session")
         return False
-    
+
     token_data = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token
     }
-    
+
     try:
-        response = requests.post('https://www.strava.com/oauth/token', data=token_data)
-        logger.info(f"Token refresh response status: {response.status_code}")
-        
+        response = requests.post(
+            'https://www.strava.com/oauth/token',
+            data=token_data,
+            timeout=10
+        )
+        logger.info("Token refresh response status: %s", response.status_code)
+
         if response.status_code != 200:
-            logger.error(f"Token refresh failed: {response.text}")
+            logger.error(
+                "Token refresh failed with status %s: %s",
+                response.status_code,
+                response.text
+            )
             return False
-        
+
         token_response = response.json()
-        session['access_token'] = token_response['access_token']
-        session['refresh_token'] = token_response.get('refresh_token', refresh_token)  # Update if new one provided
-        session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)
-        
-        logger.info("Token refreshed successfully")
-        logger.info(f"New token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
+        session.update({
+            'access_token': token_response['access_token'],
+            'refresh_token': token_response.get('refresh_token', refresh_token),
+            'token_expires_at': time.time() + token_response.get('expires_in', 21600)
+        })
+
+        expiry_time = datetime.fromtimestamp(session['token_expires_at'])
+        logger.info("Token refreshed successfully, expires at: %s", expiry_time)
         return True
-        
-    except Exception as e:
-        logger.error(f"Error during token refresh: {str(e)}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error("Error during token refresh: %s", str(e))
         return False
 
 def get_valid_access_token():
-    """Get a valid access token, refreshing if necessary"""
+    """Get a valid access token, refreshing if necessary.
+
+    Returns:
+        str or None: Valid access token if available, None otherwise.
+    """
     # Check if we have a token
     if 'access_token' not in session:
-        logger.warning("No access token in session")
+        logger.warning("No access token found in session")
         return None
-    
-    # Check if token is still valid (with 5-minute buffer)
+
+    # Check if token is still valid (with buffer)
     expires_at = session.get('token_expires_at', 0)
-    if time.time() < expires_at - 300:  # 5 minute buffer
-        logger.debug("Access token is still valid")
+    current_time = time.time()
+
+    if current_time < (expires_at - TOKEN_REFRESH_BUFFER):
+        logger.debug("Using existing valid access token")
         return session['access_token']
-    
-    # Token is expired, try to refresh
-    logger.info("Access token expired, attempting refresh")
+
+    # Token is expired or about to expire, try to refresh
+    logger.info("Access token expired or about to expire, attempting refresh")
     if refresh_access_token():
         return session['access_token']
-    else:
-        logger.error("Failed to refresh token, user needs to re-authenticate")
-        return None
+
+    logger.error("Failed to refresh access token, re-authentication required")
+    return None
 
 def get_all_activities():
     logger.info("get_all_activities called")
