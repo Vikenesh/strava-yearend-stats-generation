@@ -847,25 +847,25 @@ def get_stats_page():
         <head>
             <title>Your 2025 Year-End Running Summary for Strava</title>
             <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                * { margin: 0; padding: 0; box-sizing: border-box; }
                 
-                body {{ 
+                body { 
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     min-height: 100vh;
                     padding: 20px;
-                }}
+                }
                 
-                .container {{ 
+                .container { 
                     max-width: 1400px; 
                     margin: 0 auto; 
                     background: rgba(255, 255, 255, 0.95);
                     border-radius: 20px;
                     box-shadow: 0 20px 40px rgba(0,0,0,0.1);
                     overflow: hidden;
-                }}
+                }
                 
-                .header {{ 
+                .header { 
                     background: linear-gradient(135deg, #FC4C02 0%, #ff6b35 100%);
                     color: white;
                     padding: 30px;
@@ -874,37 +874,37 @@ def get_stats_page():
                     align-items: center;
                     flex-wrap: wrap;
                     gap: 20px;
-                }}
+                }
                 
-                .title {{ 
+                .title { 
                     font-size: 2.5rem; 
                     font-weight: 700;
                     text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-                }}
+                }
                 
-                .stats {{ 
+                .stats { 
                     background: rgba(255,255,255,0.1);
                     padding: 20px;
                     border-radius: 15px;
                     backdrop-filter: blur(10px);
-                }}
+                }
                 
-                .stats p {{ 
+                .stats p { 
                     margin: 8px 0; 
                     font-size: 1.1rem;
                     font-weight: 500;
-                }}
+                }
                 
-                .button-container {{ 
+                .button-container { 
                     padding: 30px;
                     background: #f8f9fa;
                     display: flex;
                     gap: 15px;
                     flex-wrap: wrap;
                     justify-content: center;
-                }}
+                }
                 
-                .copy-btn {{ 
+                .copy-btn { 
                     background: linear-gradient(135deg, #4CAF50, #45a049);
                     color: white; 
                     padding: 15px 25px; 
@@ -915,21 +915,21 @@ def get_stats_page():
                     font-size: 1rem;
                     transition: all 0.3s ease;
                     box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
-                }}
+                }
                 
-                .copy-btn:hover {{ 
+                .copy-btn:hover { 
                     transform: translateY(-2px);
                     box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
                     background: linear-gradient(135deg, #45a049, #4CAF50);
-                }}
+                }
                 
-                .table-container {{ 
+                .table-container { 
                     padding: 30px;
                     background: white;
                     overflow-x: auto;
-                }}
+                }
                 
-                table {{ 
+                table { 
                     width: 100%; 
                     border-collapse: separate;
                     border-spacing: 0;
@@ -937,9 +937,9 @@ def get_stats_page():
                     border-radius: 15px;
                     overflow: hidden;
                     box-shadow: 0 10px 30px rgba(0,0,0,0.05);
-                }}
+                }
                 
-                th {{ 
+                th { 
                     background: linear-gradient(135deg, #2c3e50, #34495e);
                     color: white;
                     padding: 20px 15px;
@@ -951,91 +951,91 @@ def get_stats_page():
                     position: sticky;
                     top: 0;
                     z-index: 10;
-                }}
+                }
                 
-                td {{ 
+                td { 
                     padding: 18px 15px;
                     border-bottom: 1px solid #f1f3f4;
                     font-size: 0.95rem;
                     transition: all 0.2s ease;
-                }}
+                }
                 
-                tr:hover td {{ 
+                tr:hover td { 
                     background: #f8f9fa;
                     transform: scale(1.01);
-                }}
+                }
                 
-                tr:hover td:first-child {{ 
+                tr:hover td:first-child { 
                     border-radius: 10px 0 0 10px;
-                }}
+                }
                 
-                tr:hover td:last-child {{ 
+                tr:hover td:last-child { 
                     border-radius: 0 10px 10px 0;
-                }}
+                }
                 
-                tbody tr {{ 
+                tbody tr { 
                     transition: all 0.3s ease;
                     cursor: pointer;
-                }}
+                }
                 
-                tbody tr:hover {{ 
+                tbody tr:hover { 
                     background: linear-gradient(90deg, #f8f9fa, #ffffff);
                     box-shadow: 0 5px 15px rgba(0,0,0,0.08);
                     transform: translateY(-1px);
-                }}
+                }
                 
-                .date-cell {{ 
+                .date-cell { 
                     font-weight: 600;
                     color: #2c3e50;
                     font-family: 'Courier New', monospace;
-                }}
+                }
                 
-                .activity-cell {{ 
+                .activity-cell { 
                     font-weight: 500;
                     color: #34495e;
                     max-width: 300px;
                     overflow: hidden;
                     text-overflow: ellipsis;
                     white-space: nowrap;
-                }}
+                }
                 
-                .distance-cell {{ 
+                .distance-cell { 
                     font-weight: 700;
                     color: #27ae60;
                     text-align: center;
-                }}
+                }
                 
-                .time-cell {{ 
+                .time-cell { 
                     font-weight: 600;
                     color: #2980b9;
                     text-align: center;
                     font-family: 'Courier New', monospace;
-                }}
+                }
                 
-                .pace-cell {{ 
+                .pace-cell { 
                     font-weight: 700;
                     color: #e74c3c;
                     text-align: center;
                     font-family: 'Courier New', monospace;
-                }}
+                }
                 
-                @media (max-width: 768px) {{
-                    .header {{ flex-direction: column; text-align: center; }}
-                    .title {{ font-size: 2rem; }}
-                    .button-container {{ flex-direction: column; align-items: center; }}
-                    .copy-btn {{ width: 100%; max-width: 300px; }}
-                    table {{ font-size: 0.85rem; }}
-                    th, td {{ padding: 12px 8px; }}
-                }}
+                @media (max-width: 768px) {
+                    .header { flex-direction: column; text-align: center; }
+                    .title { font-size: 2rem; }
+                    .button-container { flex-direction: column; align-items: center; }
+                    .copy-btn { width: 100%; max-width: 300px; }
+                    table { font-size: 0.85rem; }
+                    th, td { padding: 12px 8px; }
+                }
                 
-                .loading {{ 
+                .loading { 
                     display: none;
                     text-align: center;
                     padding: 20px;
                     color: #666;
-                }}
+                }
                 
-                .spinner {{ 
+                .spinner { 
                     border: 3px solid #f3f3f3;
                     border-top: 3px solid #FC4C02;
                     border-radius: 50%;
@@ -1043,12 +1043,12 @@ def get_stats_page():
                     height: 30px;
                     animation: spin 1s linear infinite;
                     margin: 0 auto 10px;
-                }}
+                }
                 
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
             </style>
         </head>
         <body>
