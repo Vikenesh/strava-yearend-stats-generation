@@ -6,6 +6,8 @@ from flask import Flask, request, redirect, session, url_for
 from collections import defaultdict, Counter
 import datetime
 import calendar
+import time
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -118,8 +120,73 @@ def analyze_wrapped_stats(activities):
         'ist_runs': ist_runs
     }
 
-def get_all_activities(token):
+def refresh_access_token():
+    """Refresh the access token using the refresh token"""
+    logger.info("Attempting to refresh access token")
+    
+    refresh_token = session.get('refresh_token')
+    if not refresh_token:
+        logger.error("No refresh token available")
+        return False
+    
+    token_data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'refresh_token',
+        'refresh_token': refresh_token
+    }
+    
+    try:
+        response = requests.post('https://www.strava.com/oauth/token', data=token_data)
+        logger.info(f"Token refresh response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            logger.error(f"Token refresh failed: {response.text}")
+            return False
+        
+        token_response = response.json()
+        session['access_token'] = token_response['access_token']
+        session['refresh_token'] = token_response.get('refresh_token', refresh_token)  # Update if new one provided
+        session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)
+        
+        logger.info("Token refreshed successfully")
+        logger.info(f"New token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error during token refresh: {str(e)}")
+        return False
+
+def get_valid_access_token():
+    """Get a valid access token, refreshing if necessary"""
+    # Check if we have a token
+    if 'access_token' not in session:
+        logger.warning("No access token in session")
+        return None
+    
+    # Check if token is still valid (with 5-minute buffer)
+    expires_at = session.get('token_expires_at', 0)
+    if time.time() < expires_at - 300:  # 5 minute buffer
+        logger.debug("Access token is still valid")
+        return session['access_token']
+    
+    # Token is expired, try to refresh
+    logger.info("Access token expired, attempting refresh")
+    if refresh_access_token():
+        return session['access_token']
+    else:
+        logger.error("Failed to refresh token, user needs to re-authenticate")
+        return None
+
+def get_all_activities():
     logger.info("get_all_activities called")
+    
+    # Get valid token (will refresh if needed)
+    token = get_valid_access_token()
+    if not token:
+        logger.error("No valid access token available")
+        return None
+    
     headers = {'Authorization': f'Bearer {token}'}
     all_activities = []
     page = 1
@@ -129,6 +196,17 @@ def get_all_activities(token):
         url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
         logger.debug(f"Fetching page {page}")
         response = requests.get(url, headers=headers)
+        
+        # Handle 401/403 errors - try token refresh
+        if response.status_code in [401, 403]:
+            logger.warning(f"Authentication error ({response.status_code}), attempting token refresh")
+            if refresh_access_token():
+                token = session['access_token']
+                headers = {'Authorization': f'Bearer {token}'}
+                response = requests.get(url, headers=headers)
+            else:
+                logger.error("Token refresh failed, cannot fetch activities")
+                return None
         
         if response.status_code != 200:
             logger.error(f"Error fetching page {page}: {response.status_code}")
@@ -451,9 +529,13 @@ def callback():
     
     token_response = response.json()
     session['access_token'] = token_response['access_token']
+    session['refresh_token'] = token_response.get('refresh_token')
+    session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)  # Default 6 hours
     session['athlete_info'] = token_response.get('athlete', {})
     
     logger.info("Successfully obtained access token")
+    logger.info(f"Token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
+    logger.info(f"Refresh token available: {'Yes' if session.get('refresh_token') else 'No'}")
     logger.info(f"Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
     
     return redirect('/')
@@ -465,8 +547,31 @@ def callback_with_slash():
 
 @app.route('/logout')
 def logout():
+    logger.info("User logging out, clearing session")
     session.clear()
     return '<h1>Logged Out</h1><p><a href="/login">Login again</a></p>'
+
+@app.route('/token-status')
+def token_status():
+    """Route to check current token status (for debugging)"""
+    if 'access_token' not in session:
+        return '<h1>No Token</h1><p>No access token in session. <a href="/login">Login</a></p>'
+    
+    expires_at = session.get('token_expires_at', 0)
+    time_remaining = expires_at - time.time()
+    refresh_available = 'Yes' if session.get('refresh_token') else 'No'
+    
+    status_html = f"""
+    <h1>Token Status</h1>
+    <p><strong>Access Token:</strong> Available</p>
+    <p><strong>Expires At:</strong> {datetime.fromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><strong>Time Remaining:</strong> {int(time_remaining // 60)} minutes {int(time_remaining % 60)} seconds</p>
+    <p><strong>Refresh Token Available:</strong> {refresh_available}</p>
+    <p><strong>Athlete:</strong> {session.get('athlete_info', {}).get('firstname', 'Unknown')} {session.get('athlete_info', {}).get('lastname', '')}</p>
+    <p><a href="/">Back to Stats</a> | <a href="/logout">Logout</a></p>
+    """
+    
+    return status_html
 
 @app.route('/analyze')
 def analyze():
@@ -478,13 +583,15 @@ def analyze():
             return redirect('/login')
         
         logger.info("User has access token, proceeding with analysis")
-        token = session['access_token']
         athlete = session.get('athlete_info', {})
         athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
         logger.info(f"Analyzing data for athlete: {athlete_name}")
         
         logger.info("Fetching activities for analysis")
-        activities = get_all_activities(token)
+        activities = get_all_activities()
+        if activities is None:
+            logger.error("Failed to fetch activities due to authentication error")
+            return redirect('/login')
         logger.info(f"Fetched {len(activities)} total activities for analysis")
         
         logger.info("Calling ChatGPT API for analysis")
@@ -528,14 +635,16 @@ def get_stats_page():
             return redirect('/login')
         
         logger.info("User has access token, fetching stats")
-        token = session['access_token']
         athlete = session.get('athlete_info', {})
         athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
         logger.info(f"Generating stats page for athlete: {athlete_name}")
         logger.debug(f"athlete_name type: {type(athlete_name)}, value: {repr(athlete_name)}")
         
         logger.info("Fetching all activities")
-        activities = get_all_activities(token)
+        activities = get_all_activities()
+        if activities is None:
+            logger.error("Failed to fetch activities due to authentication error")
+            return redirect('/login')
         logger.info(f"Fetched {len(activities)} total activities")
         
         # Filter for runs only and 2025 only
@@ -587,7 +696,7 @@ def get_stats_page():
                 else:
                     pace_str = "N/A"
                 
-                table_rows += f"<tr><td>{date}</td><td>{name}</td><td>{distance}</td><td>{time_str}</td><td>{pace_str}</td></tr>"
+                table_rows += f"<tr><td class='date-cell'>{date}</td><td class='activity-cell' title='{name}'>{name}</td><td class='distance-cell'>{distance}</td><td class='time-cell'>{time_str}</td><td class='pace-cell'>{pace_str}</td></tr>"
             except Exception as e:
                 # Skip problematic rows but continue
                 logger.error(f"Error processing run {i}: {str(e)}")
@@ -653,47 +762,277 @@ def get_stats_page():
         <head>
             <title>Strava Year-End Running Summary - 2025</title>
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-                .copy-btn {{ background: #4CAF50; color: white; padding: 10px; cursor: pointer; margin: 10px 0; border: none; border-radius: 4px; }}
-                .copy-btn:hover {{ background: #45a049; }}
-                .stats {{ background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 5px; }}
-                .header {{ display: flex; justify-content: space-between; align-items: center; }}
-                .title {{ color: #FC4C02; }}
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                
+                body {{ 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    padding: 20px;
+                }}
+                
+                .container {{ 
+                    max-width: 1400px; 
+                    margin: 0 auto; 
+                    background: rgba(255, 255, 255, 0.95);
+                    border-radius: 20px;
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                    overflow: hidden;
+                }}
+                
+                .header {{ 
+                    background: linear-gradient(135deg, #FC4C02 0%, #ff6b35 100%);
+                    color: white;
+                    padding: 30px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    flex-wrap: wrap;
+                    gap: 20px;
+                }}
+                
+                .title {{ 
+                    font-size: 2.5rem; 
+                    font-weight: 700;
+                    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+                }}
+                
+                .stats {{ 
+                    background: rgba(255,255,255,0.1);
+                    padding: 20px;
+                    border-radius: 15px;
+                    backdrop-filter: blur(10px);
+                }}
+                
+                .stats p {{ 
+                    margin: 8px 0; 
+                    font-size: 1.1rem;
+                    font-weight: 500;
+                }}
+                
+                .button-container {{ 
+                    padding: 30px;
+                    background: #f8f9fa;
+                    display: flex;
+                    gap: 15px;
+                    flex-wrap: wrap;
+                    justify-content: center;
+                }}
+                
+                .copy-btn {{ 
+                    background: linear-gradient(135deg, #4CAF50, #45a049);
+                    color: white; 
+                    padding: 15px 25px; 
+                    border: none; 
+                    border-radius: 10px;
+                    cursor: pointer; 
+                    font-weight: 600;
+                    font-size: 1rem;
+                    transition: all 0.3s ease;
+                    box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+                }}
+                
+                .copy-btn:hover {{ 
+                    transform: translateY(-2px);
+                    box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+                    background: linear-gradient(135deg, #45a049, #4CAF50);
+                }}
+                
+                .table-container {{ 
+                    padding: 30px;
+                    background: white;
+                    overflow-x: auto;
+                }}
+                
+                table {{ 
+                    width: 100%; 
+                    border-collapse: separate;
+                    border-spacing: 0;
+                    background: white;
+                    border-radius: 15px;
+                    overflow: hidden;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+                }}
+                
+                th {{ 
+                    background: linear-gradient(135deg, #2c3e50, #34495e);
+                    color: white;
+                    padding: 20px 15px;
+                    text-align: left;
+                    font-weight: 600;
+                    font-size: 0.95rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    position: sticky;
+                    top: 0;
+                    z-index: 10;
+                }}
+                
+                td {{ 
+                    padding: 18px 15px;
+                    border-bottom: 1px solid #f1f3f4;
+                    font-size: 0.95rem;
+                    transition: all 0.2s ease;
+                }}
+                
+                tr:hover td {{ 
+                    background: #f8f9fa;
+                    transform: scale(1.01);
+                }}
+                
+                tr:hover td:first-child {{ 
+                    border-radius: 10px 0 0 10px;
+                }}
+                
+                tr:hover td:last-child {{ 
+                    border-radius: 0 10px 10px 0;
+                }}
+                
+                tbody tr {{ 
+                    transition: all 0.3s ease;
+                    cursor: pointer;
+                }}
+                
+                tbody tr:hover {{ 
+                    background: linear-gradient(90deg, #f8f9fa, #ffffff);
+                    box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+                    transform: translateY(-1px);
+                }}
+                
+                .date-cell {{ 
+                    font-weight: 600;
+                    color: #2c3e50;
+                    font-family: 'Courier New', monospace;
+                }}
+                
+                .activity-cell {{ 
+                    font-weight: 500;
+                    color: #34495e;
+                    max-width: 300px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }}
+                
+                .distance-cell {{ 
+                    font-weight: 700;
+                    color: #27ae60;
+                    text-align: center;
+                }}
+                
+                .time-cell {{ 
+                    font-weight: 600;
+                    color: #2980b9;
+                    text-align: center;
+                    font-family: 'Courier New', monospace;
+                }}
+                
+                .pace-cell {{ 
+                    font-weight: 700;
+                    color: #e74c3c;
+                    text-align: center;
+                    font-family: 'Courier New', monospace;
+                }}
+                
+                @media (max-width: 768px) {{
+                    .header {{ flex-direction: column; text-align: center; }}
+                    .title {{ font-size: 2rem; }}
+                    .button-container {{ flex-direction: column; align-items: center; }}
+                    .copy-btn {{ width: 100%; max-width: 300px; }}
+                    table {{ font-size: 0.85rem; }}
+                    th, td {{ padding: 12px 8px; }}
+                }}
+                
+                .loading {{ 
+                    display: none;
+                    text-align: center;
+                    padding: 20px;
+                    color: #666;
+                }}
+                
+                .spinner {{ 
+                    border: 3px solid #f3f3f3;
+                    border-top: 3px solid #FC4C02;
+                    border-radius: 50%;
+                    width: 30px;
+                    height: 30px;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto 10px;
+                }}
+                
+                @keyframes spin {{
+                    0% {{ transform: rotate(0deg); }}
+                    100% {{ transform: rotate(360deg); }}
+                }}
             </style>
         </head>
         <body>
-            <div class="header">
-                <div>
-                    <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
-                    <div class="stats">
-                        <p><strong>Total Activities (All Time):</strong> {total_activities_count}</p>
-                        <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
-                        <p><strong>Other Activities:</strong> {other_activities_count}</p>
-                        {display_info}
+            <div class="container">
+                <div class="header">
+                    <div>
+                        <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
+                        <div class="stats">
+                            <p><strong>Total Activities (All Time):</strong> {total_activities_count}</p>
+                            <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
+                            <p><strong>Other Activities:</strong> {other_activities_count}</p>
+                            {display_info}
+                        </div>
+                    </div>
+                    <div>
+                        <a href="/logout" style="color: white; text-decoration: none; font-weight: 600;">Logout</a>
                     </div>
                 </div>
-                <div>
-                    <a href="/logout" style="color: red; text-decoration: none;">Logout</a>
+                
+                <div class="button-container">
+                    <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
+                    <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
+                    <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
+                </div>
+                
+                <div class="table-container">
+                    <div class="loading" id="loading">
+                        <div class="spinner"></div>
+                        <p>Loading activities...</p>
+                    </div>
+                    <table id="activityTable">
+                        <thead>
+                            <tr><th>Date & Time (IST)</th><th>Activity Name</th><th>Distance (km)</th><th>Duration</th><th>Pace (min/km)</th></tr>
+                        </thead>
+                        <tbody>
+                            {table_rows}
+                        </tbody>
+                    </table>
                 </div>
             </div>
             
-            <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
-            <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
-            <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
-            
-            <table id="activityTable">
-                <thead>
-                    <tr><th>Date</th><th>Activity Name</th><th>Distance (km)</th><th>Time</th><th>Pace (min/km)</th></tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-            
             <script>
+                // Add interactive features
+                document.addEventListener('DOMContentLoaded', function() {{
+                    // Hide loading spinner
+                    document.getElementById('loading').style.display = 'none';
+                    
+                    // Add click handlers to table rows
+                    const rows = document.querySelectorAll('tbody tr');
+                    rows.forEach(row => {{
+                        row.addEventListener('click', function() {{
+                            // Highlight selected row
+                            rows.forEach(r => r.style.background = '');
+                            this.style.background = 'linear-gradient(90deg, #e3f2fd, #ffffff)';
+                        }});
+                    }});
+                    
+                    // Add button hover effects
+                    const buttons = document.querySelectorAll('.copy-btn');
+                    buttons.forEach(btn => {{
+                        btn.addEventListener('mouseenter', function() {{
+                            this.style.transform = 'translateY(-2px) scale(1.05)';
+                        }});
+                        btn.addEventListener('mouseleave', function() {{
+                            this.style.transform = 'translateY(0) scale(1)';
+                        }});
+                    }});
+                }});
+                
                 function copyTableData() {{
                     const table = document.getElementById('activityTable');
                     const rows = table.getElementsByTagName('tr');
