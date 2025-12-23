@@ -556,7 +556,15 @@ def get_stats_page():
         error_count = 0
         for i, run in enumerate(runs_2025[:max_runs]):
             try:
-                date = run.get('start_date', 'N/A')[:10] if run.get('start_date') else 'N/A'
+                # Convert UTC to IST for display
+                utc_date_str = run.get('start_date', 'N/A')
+                if utc_date_str and utc_date_str != 'N/A':
+                    utc_dt = datetime.datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
+                    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                    date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
+                else:
+                    date = 'N/A'
+                
                 name = run.get('name', 'Unknown Activity')
                 distance = round(float(run.get('distance', 0)) / 1000, 2)  # Convert to km
                 time_sec = int(run.get('moving_time', 0))
@@ -603,7 +611,15 @@ def get_stats_page():
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
         for run in runs_2025[:max_runs]:
             try:
-                date = run.get('start_date', 'N/A')[:10] if run.get('start_date') else 'N/A'
+                # Convert UTC to IST for CSV
+                utc_date_str = run.get('start_date', 'N/A')
+                if utc_date_str and utc_date_str != 'N/A':
+                    utc_dt = datetime.datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
+                    ist_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                    date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
+                else:
+                    date = 'N/A'
+                
                 name = run.get('name', 'Unknown Activity').replace(',', ';')  # Replace commas to avoid CSV issues
                 distance = round(float(run.get('distance', 0)) / 1000, 2)
                 time_sec = int(run.get('moving_time', 0))
