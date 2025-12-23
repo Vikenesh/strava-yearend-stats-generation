@@ -593,6 +593,14 @@ def get_stats_page():
         athlete_name_display = str(athlete_name).strip()
         logger.debug(f"athlete_name_display: {repr(athlete_name_display)}")
         
+        # Pre-calculate template variables to avoid function call issues
+        total_activities_count = len(activities)
+        runs_2025_count = len(runs_2025)
+        other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
+        display_info = f'<p><em>Showing first {max_runs} of {runs_2025_count} 2025 runs</em></p>' if runs_2025_count > max_runs else ''
+        
+        logger.debug(f"Template vars - total_activities: {total_activities_count}, runs_2025: {runs_2025_count}, other: {other_activities_count}")
+        
         html_content = """
         <!DOCTYPE html>
         <html>
@@ -615,10 +623,10 @@ def get_stats_page():
                 <div>
                     <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
                     <div class="stats">
-                        <p><strong>Total Activities (All Time):</strong> {len(activities)}</p>
-                        <p><strong>2025 Runs:</strong> {len(runs_2025)}</p>
-                        <p><strong>Other Activities:</strong> {len(activities) - len([a for a in activities if a['type'] == 'Run'])}</p>
-                        {f'<p><em>Showing first {max_runs} of {len(runs_2025)} 2025 runs</em></p>' if len(runs_2025) > max_runs else ''}
+                        <p><strong>Total Activities (All Time):</strong> {total_activities_count}</p>
+                        <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
+                        <p><strong>Other Activities:</strong> {other_activities_count}</p>
+                        {display_info}
                     </div>
                 </div>
                 <div>
@@ -735,6 +743,10 @@ ${data}"
         </html>
         """.format(
             athlete_name_display=athlete_name_display,
+            total_activities_count=total_activities_count,
+            runs_2025_count=runs_2025_count,
+            other_activities_count=other_activities_count,
+            display_info=display_info,
             activities=activities,
             runs_2025=runs_2025,
             table_rows=table_rows
