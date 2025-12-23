@@ -2,23 +2,63 @@ import os
 import requests
 import json
 import logging
-from flask import Flask, request, redirect, session, url_for
-from collections import defaultdict, Counter
+from flask import Flask, request, session, redirect, url_for, jsonify, flash, render_template_string
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import requests
+import os
+import logging
 import calendar
 import time
 from datetime import datetime, timedelta, timezone
+import json
+import csv
+import io
+import base64
+import openai
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Flask app
+app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
+
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///strava_users.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# Import models after db initialization to avoid circular imports
+from models import User
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
-
 # Strava API credentials from environment variables
 CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '130483')
 CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET', '71fc47a3e9e1c93e165ae106ca532d1bc428088e')
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
+
+# Initialize OpenAI
+openai.api_key = os.environ.get('OPENAI_API_KEY')
+
+# Create database tables
+with app.app_context():
+    db.create_all()
 
 # OpenAI API settings
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
@@ -179,50 +219,46 @@ def get_valid_access_token():
 
 def get_all_activities():
     logger.info("get_all_activities called")
+    page = 1
+    per_page = 100  # Maximum allowed by Strava API
     
-    # Get valid token (will refresh if needed)
-    token = get_valid_access_token()
-    if not token:
-        logger.error("No valid access token available")
+    # Get auth headers with automatic token refresh
+    headers = get_strava_auth_headers(user)
+    if not headers:
+        logger.error("Failed to get valid authentication headers")
         return None
     
-    headers = {'Authorization': f'Bearer {token}'}
-    all_activities = []
-    page = 1
-    
-    logger.info("Fetching activities...")
     while True:
-        url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
-        logger.debug(f"Fetching page {page}")
-        response = requests.get(url, headers=headers)
-        
-        # Handle 401/403 errors - try token refresh
-        if response.status_code in [401, 403]:
-            logger.warning(f"Authentication error ({response.status_code}), attempting token refresh")
-            if refresh_access_token():
-                token = session['access_token']
-                headers = {'Authorization': f'Bearer {token}'}
-                response = requests.get(url, headers=headers)
-            else:
-                logger.error("Token refresh failed, cannot fetch activities")
-                return None
-        
-        if response.status_code != 200:
-            logger.error(f"Error fetching page {page}: {response.status_code}")
-            break
-            
         try:
-            data = response.json()
-        except Exception as e:
-            logger.error(f"Error parsing JSON: {e}")
-            break
-        
-        if not data:  # No more activities
-            logger.info(f"Fetched {len(all_activities)} total activities from {page-1} pages")
-            break
+            url = f"https://www.strava.com/api/v3/athlete/activities?page={page}&per_page={per_page}"
             
-        all_activities.extend(data)
-        logger.info(f"Fetched page {page}, got {len(data)} activities, total so far: {len(all_activities)}")
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            page_activities = response.json()
+            if not page_activities:
+                break
+                
+            activities.extend(page_activities)
+            page += 1
+            
+            # Rate limiting: respect Strava's rate limits
+            rate_limit = response.headers.get('X-RateLimit-Limit')
+            rate_usage = response.headers.get('X-RateLimit-Usage')
+            if rate_limit and rate_usage:
+                used, limit = map(int, rate_usage.split(','))
+                if used >= int(rate_limit):
+                    time.sleep(900)  # Wait 15 minutes if rate limit is close
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                logger.error("Unauthorized - token may have expired")
+                # Try to refresh token once
+                headers = get_strava_auth_headers(user)
+                if not headers:
+                    return None
+                continue
+            logger.error(f"Error fetching activities: {str(e)}")
         page += 1
         
         # Safety check to prevent infinite loops
@@ -310,14 +346,186 @@ def analyze_with_chatgpt(activities, athlete_name):
         logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
         return f"Error in analyze_with_chatgpt: {str(e)}"
 
-@app.route('/')
-def index():
-    logger.info("Index route accessed")
-    logger.debug(f"Session keys: {list(session.keys())}")
+# User Authentication Routes
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists')
+            return redirect(url_for('register'))
+            
+        if User.query.filter_by(email=email).first():
+            flash('Email already registered')
+            return redirect(url_for('register'))
+            
+        user = User(username=username, email=email)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        
+        login_user(user)
+        flash('Registration successful!')
+        return redirect(url_for('home'))
+        
+    return '''
+    <h2>Register</h2>
+    <form method="POST">
+        <input type="text" name="username" placeholder="Username" required><br>
+        <input type="email" name="email" placeholder="Email" required><br>
+        <input type="password" name="password" placeholder="Password" required><br>
+        <button type="submit">Register</button>
+    </form>
+    <p>Already have an account? <a href="/login">Login here</a></p>
+    '''
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        user = User.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            login_user(user)
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('home'))
+        
+        flash('Invalid username or password')
     
-    if 'access_token' in session:
-        logger.info("User is logged in, showing stats page")
-        return get_stats_page()
+    return '''
+    <h2>Login</h2>
+    <form method="POST">
+        <input type="text" name="username" placeholder="Username" required><br>
+        <input type="password" name="password" placeholder="Password" required><br>
+        <button type="submit">Login</button>
+    </form>
+    <p>Don't have an account? <a href="/register">Register here</a></p>
+    '''
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('home'))
+
+@app.route('/')
+def home():
+    if current_user.is_authenticated:
+        if current_user.access_token:
+            logger.info("User is logged in with Strava, showing stats page")
+            return get_stats_page()
+        else:
+            logger.info("User is logged in but not connected to Strava")
+            return '''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Connect to Strava - Year-End Running Summary</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body {
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        min-height: 100vh;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        padding: 20px;
+                    }
+                    .container {
+                        background: white;
+                        padding: 3rem;
+                        border-radius: 15px;
+                        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                        text-align: center;
+                        max-width: 500px;
+                        width: 100%;
+                    }
+                    h1 {
+                        color: #333;
+                        margin-bottom: 1.5rem;
+                        font-size: 2rem;
+                    }
+                    p {
+                        color: #555;
+                        margin-bottom: 2rem;
+                        line-height: 1.6;
+                    }
+                    .btn {
+                        display: inline-block;
+                        background: #FC4C02;
+                        color: white;
+                        padding: 12px 30px;
+                        border-radius: 30px;
+                        text-decoration: none;
+                        font-weight: 600;
+                        font-size: 1.1rem;
+                        transition: all 0.3s ease;
+                        border: none;
+                        cursor: pointer;
+                        margin: 10px 0;
+                    }
+                    .btn:hover {
+                        background: #e04200;
+                        transform: translateY(-2px);
+                        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+                    }
+                    .logo {
+                        max-width: 200px;
+                        margin-bottom: 1.5rem;
+                    }
+                    .features {
+                        text-align: left;
+                        margin: 2rem 0;
+                    }
+                    .feature {
+                        display: flex;
+                        align-items: center;
+                        margin-bottom: 1rem;
+                    }
+                    .feature i {
+                        color: #FC4C02;
+                        margin-right: 10px;
+                        font-size: 1.2rem;
+                    }
+                </style>
+                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Welcome to Your Running Summary</h1>
+                    <p>Connect your Strava account to see your 2025 running statistics and insights.</p>
+                    
+                    <a href="/connect-strava" class="btn">
+                        <i class="fab fa-strava"></i> Connect with Strava
+                    </a>
+                    
+                    <div class="features">
+                        <div class="feature">
+                            <i class="fas fa-chart-line"></i>
+                            <span>View your running statistics</span>
+                        </div>
+                        <div class="feature">
+                            <i class="fas fa-trophy"></i>
+                            <span>Track your progress</span>
+                        </div>
+                        <div class="feature">
+                            <i class="fas fa-lock"></i>
+                            <span>Your data is secure</span>
+                        </div>
+                    </div>
+                    
+                    <p><small>By connecting, you agree to our <a href="/privacy" style="color: #667eea;">Privacy Policy</a> and <a href="/terms" style="color: #667eea;">Terms of Service</a>.</small></p>
+                    <p><a href="/logout" style="color: #718096; text-decoration: none;">Not {current_user.username}? Logout</a></p>
+                </div>
+            </body>
+            </html>
+            '''.format(current_user=current_user)
     else:
         logger.info("User not logged in, showing login page")
         return '''
@@ -339,14 +547,17 @@ def index():
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    overflow: hidden;
+                    padding: 20px;
                 }
                 
                 .container {
+                    background: white;
+                    padding: 3rem;
+                    border-radius: 15px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
                     text-align: center;
-                    padding: 2rem;
-                    max-width: 600px;
-                    position: relative;
+                    max-width: 500px;
+                    width: 100%;
                 }
                 
                 .year-display {
@@ -502,43 +713,6 @@ def callback():
     if error:
         logger.error(f"OAuth error: {error}")
         return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
-    
-    if not code:
-        logger.error("No authorization code received")
-        return '<h1>Error</h1><p>No authorization code received</p><p><a href="/">Back to home</a></p>'
-    
-    logger.info(f"Received authorization code: {code[:10]}...")
-    
-    token_data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'code': code,
-        'grant_type': 'authorization_code'
-    }
-    
-    logger.info("Requesting access token...")
-    response = requests.post('https://www.strava.com/oauth/token', data=token_data)
-    
-    logger.info(f"Token response status: {response.status_code}")
-    logger.debug(f"Token response: {response.text[:200]}...")
-    
-    if response.status_code != 200:
-        logger.error("Token exchange failed")
-        return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p><p><a href="/">Back to home</a></p>'
-    
-    token_response = response.json()
-    session['access_token'] = token_response['access_token']
-    session['refresh_token'] = token_response.get('refresh_token')
-    session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)  # Default 6 hours
-    session['athlete_info'] = token_response.get('athlete', {})
-    
-    logger.info("Successfully obtained access token")
-    logger.info(f"Token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
-    logger.info(f"Refresh token available: {'Yes' if session.get('refresh_token') else 'No'}")
-    logger.info(f"Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
-    
-    return redirect('/')
-
 @app.route('/callback/')
 def callback_with_slash():
     logger.info("Callback with slash route accessed")
@@ -673,16 +847,15 @@ def get_stats_page():
                 else:
                     date = 'N/A'
                 
-                name = run.get('name', 'Unknown Activity')
-                distance = round(float(run.get('distance', 0)) / 1000, 2)  # Convert to km
-                time_sec = int(run.get('moving_time', 0))
+                name = run.get('name', 'N/A')
+                distance = round(run.get('distance', 0) / 1000, 2)  # Convert to km
                 
-                # Simple time formatting
+                # Format time
+                time_sec = run.get('elapsed_time', 0)
                 if time_sec > 0:
-                    hours = time_sec // 3600
-                    minutes = (time_sec % 3600) // 60
-                    seconds = time_sec % 60
-                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                    hours, remainder = divmod(time_sec, 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
                 else:
                     time_str = "00:00:00"
                 
@@ -700,66 +873,32 @@ def get_stats_page():
                 # Skip problematic rows but continue
                 logger.error(f"Error processing run {i}: {str(e)}")
                 error_count += 1
-                table_rows += f"<tr><td>Error</td><td>Error in data</td><td>-</td><td>-</td><td>-</td></tr>"
                 continue
         
-        logger.info(f"Table generation completed with {error_count} errors")
+        # Generate stats HTML
+        stats_html = f"""
+        <div class="stats-container">
+            <div class="stat-box">
+                <div class="stat-value">{total_runs}</div>
+                <div class="stat-label">Total Runs</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{total_distance:.1f} km</div>
+                <div class="stat-label">Total Distance</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{total_time:.1f} hours</div>
+                <div class="stat-label">Total Time</div>
+            </div>
+        </div>
+        """
         
-        # Ensure athlete_name is a clean string for template
-        athlete_name_display = str(athlete_name).strip()
-        logger.debug(f"athlete_name_display: {repr(athlete_name_display)}")
-        
-        # Pre-calculate template variables to avoid function call issues
-        total_activities_count = len(activities)
-        runs_2025_count = len(runs_2025)
-        other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
-        display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
-        
-        # Pre-generate CSV data for JavaScript
-        csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
-        for run in runs_2025[:max_runs]:
-            try:
-                # Convert UTC to IST for CSV
-                utc_date_str = run.get('start_date', 'N/A')
-                if utc_date_str and utc_date_str != 'N/A':
-                    utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
-                    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                    date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
-                else:
-                    date = 'N/A'
-                
-                name = run.get('name', 'Unknown Activity').replace(',', ';')  # Replace commas to avoid CSV issues
-                distance = round(float(run.get('distance', 0)) / 1000, 2)
-                time_sec = int(run.get('moving_time', 0))
-                
-                if time_sec > 0:
-                    hours = time_sec // 3600
-                    minutes = (time_sec % 3600) // 60
-                    seconds = time_sec % 60
-                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    time_str = "00:00:00"
-                
-                if distance > 0:
-                    pace_min_per_km = time_sec / 60 / distance
-                    pace_min = int(pace_min_per_km)
-                    pace_sec = int((pace_min_per_km - pace_min) * 60)
-                    pace_str = f"{pace_min}:{pace_sec:02d}"
-                else:
-                    pace_str = "N/A"
-                
-                csv_data += f"{date},{name},{distance},{time_str},{pace_str}\\n"
-            except Exception as e:
-                continue
-        
-        logger.debug(f"Template vars - total_activities: {total_activities_count}, runs_2025: {runs_2025_count}, other: {other_activities_count}")
-        logger.debug(f"Generated CSV data with {len(csv_data.split(chr(10)))} lines")
-        
-        html_content = """
+        # Generate HTML
+        html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Your 2025 Year-End Running Summary for Strava</title>
+            <title>Your 2025 Running Summary</title>
             <style>
                 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                 
@@ -770,178 +909,188 @@ def get_stats_page():
                     padding: 20px;
                 }}
                 
-                .container {{ 
-                    max-width: 1400px; 
-                    margin: 0 auto; 
+                .container {{
+                    max-width: 1200px;
+                    margin: 0 auto;
                     background: rgba(255, 255, 255, 0.95);
-                    border-radius: 20px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
+                    border-radius: 15px;
+                    padding: 30px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
                 }}
                 
-                .header {{ 
-                    background: linear-gradient(135deg, #FC4C02 0%, #ff6b35 100%);
-                    color: white;
-                    padding: 30px;
+                h1 {{
+                    color: #2d3748;
+                    text-align: center;
+                    margin-bottom: 30px;
+                    font-size: 2.5rem;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                }}
+                
+                .stats-container {{
                     display: flex;
-                    justify-content: space-between;
-                    align-items: center;
+                    justify-content: space-around;
+                    margin: 30px 0;
                     flex-wrap: wrap;
                     gap: 20px;
                 }}
                 
-                .title {{ 
-                    font-size: 2.5rem; 
-                    font-weight: 700;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-                }}
-                
-                .stats {{ 
-                    background: rgba(255,255,255,0.1);
+                .stat-box {{
+                    background: white;
                     padding: 20px;
-                    border-radius: 15px;
-                    backdrop-filter: blur(10px);
-                }}
-                
-                .stats p {{ 
-                    margin: 8px 0; 
-                    font-size: 1.1rem;
-                    font-weight: 500;
-                }}
-                
-                .button-container {{ 
-                    padding: 30px;
-                    background: #f8f9fa;
-                    display: flex;
-                    gap: 15px;
-                    flex-wrap: wrap;
-                    justify-content: center;
-                }}
-                
-                .copy-btn {{ 
-                    background: linear-gradient(135deg, #4CAF50, #45a049);
-                    color: white; 
-                    padding: 15px 25px; 
-                    border: none; 
                     border-radius: 10px;
-                    cursor: pointer; 
-                    font-weight: 600;
-                    font-size: 1rem;
-                    transition: all 0.3s ease;
-                    box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    text-align: center;
+                    flex: 1;
+                    min-width: 200px;
+                    transition: transform 0.3s ease;
                 }}
                 
-                .copy-btn:hover {{ 
-                    transform: translateY(-2px);
-                    box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
-                    background: linear-gradient(135deg, #45a049, #4CAF50);
+                .stat-box:hover {{
+                    transform: translateY(-5px);
                 }}
                 
-                .table-container {{ 
-                    padding: 30px;
-                    background: white;
+                .stat-value {{
+                    font-size: 2rem;
+                    font-weight: bold;
+                    color: #4a5568;
+                    margin-bottom: 5px;
+                }}
+                
+                .stat-label {{
+                    color: #718096;
+                    font-size: 0.9rem;
+                }}
+                
+                .table-container {{
+                    margin-top: 30px;
                     overflow-x: auto;
-                }}
-                
-                table {{ 
-                    width: 100%; 
-                    border-collapse: separate;
-                    border-spacing: 0;
                     background: white;
-                    border-radius: 15px;
-                    overflow: hidden;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+                    border-radius: 10px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
                 }}
                 
-                th {{ 
-                    background: linear-gradient(135deg, #2c3e50, #34495e);
-                    color: white;
-                    padding: 20px 15px;
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                }}
+                
+                th, td {{
+                    padding: 12px 15px;
                     text-align: left;
+                    border-bottom: 1px solid #e2e8f0;
+                }}
+                
+                th {{
+                    background-color: #f8fafc;
+                    color: #4a5568;
                     font-weight: 600;
-                    font-size: 0.95rem;
                     text-transform: uppercase;
+                    font-size: 0.8rem;
                     letter-spacing: 0.5px;
-                    position: sticky;
-                    top: 0;
-                    z-index: 10;
                 }}
                 
-                td {{ 
-                    padding: 18px 15px;
-                    border-bottom: 1px solid #f1f3f4;
-                    font-size: 0.95rem;
-                    transition: all 0.2s ease;
+                tr:hover {{
+                    background-color: #f8fafc;
                 }}
                 
-                tr:hover td {{ 
-                    background: #f8f9fa;
-                    transform: scale(1.01);
-                }}
+                .date-cell {{ width: 15%; min-width: 150px; }}
+                .activity-cell {{ width: 40%; min-width: 200px; }}
+                .distance-cell, .time-cell, .pace-cell {{ width: 15%; text-align: right; }}
                 
-                tr:hover td:first-child {{ 
-                    border-radius: 10px 0 0 10px;
-                }}
-                
-                tr:hover td:last-child {{ 
-                    border-radius: 0 10px 10px 0;
-                }}
-                
-                tbody tr {{ 
-                    transition: all 0.3s ease;
-                    cursor: pointer;
-                }}
-                
-                tbody tr:hover {{ 
-                    background: linear-gradient(90deg, #f8f9fa, #ffffff);
-                    box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-                    transform: translateY(-1px);
-                }}
-                
-                .date-cell {{ 
-                    font-weight: 600;
-                    color: #2c3e50;
-                    font-family: 'Courier New', monospace;
-                }}
-                
-                .activity-cell {{ 
+                .export-btn {{
+                    display: inline-block;
+                    background: #4f46e5;
+                    color: white;
+                    padding: 10px 20px;
+                    border-radius: 5px;
+                    text-decoration: none;
+                    margin-top: 20px;
                     font-weight: 500;
-                    color: #34495e;
-                    max-width: 300px;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    white-space: nowrap;
+                    transition: background 0.3s ease;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 1rem;
                 }}
                 
-                .distance-cell {{ 
-                    font-weight: 700;
-                    color: #27ae60;
-                    text-align: center;
+                .export-btn:hover {{
+                    background: #4338ca;
                 }}
                 
-                .time-cell {{ 
-                    font-weight: 600;
-                    color: #2980b9;
-                    text-align: center;
-                    font-family: 'Courier New', monospace;
+                .header-container {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 20px;
                 }}
                 
-                .pace-cell {{ 
-                    font-weight: 700;
-                    color: #e74c3c;
-                    text-align: center;
-                    font-family: 'Courier New', monospace;
+                .logout-btn {{
+                    background: #e53e3e;
+                    color: white;
+                    padding: 8px 16px;
+                    border-radius: 5px;
+                    text-decoration: none;
+                    font-size: 0.9rem;
+                    transition: background 0.3s ease;
+                }}
+                
+                .connect-strava-btn {{
+                    background: #FC4C02;  /* Strava orange */
+                    color: white;
+                    padding: 8px 16px;
+                    border-radius: 5px;
+                    text-decoration: none;
+                    font-size: 0.9rem;
+                    transition: background 0.3s ease;
+                    margin-right: 10px;
+                }}
+                
+                .connect-strava-btn:hover {{
+                    background: #e04200;
+                }}
+                
+                .logout-btn:hover {{
+                    background: #c53030;
+                }}
+                
+                .alert {{
+                    padding: 15px;
+                    margin-bottom: 20px;
+                    border: 1px solid transparent;
+                    border-radius: 4px;
+                }}
+                
+                .alert-success {{
+                    color: #155724;
+                    background-color: #d4edda;
+                    border-color: #c3e6cb;
+                }}
+                
+                .alert-error {{
+                    color: #721c24;
+                    background-color: #f8d7da;
+                    border-color: #f5c6cb;
                 }}
                 
                 @media (max-width: 768px) {{
-                    .header {{ flex-direction: column; text-align: center; }}
-                    .title {{ font-size: 2rem; }}
-                    .button-container {{ flex-direction: column; align-items: center; }}
-                    .copy-btn {{ width: 100%; max-width: 300px; }}
-                    table {{ font-size: 0.85rem; }}
-                    th, td {{ padding: 12px 8px; }}
+                    .container {{
+                        padding: 15px;
+                    }}
+                    
+                    .stats-container {{
+                        flex-direction: column;
+                    }}
+                    
+                    .stat-box {{
+                        margin-bottom: 15px;
+                    }}
+                    
+                    th, td {{
+                        padding: 8px 10px;
+                        font-size: 0.9rem;
+                    }}
                 }}
-                
                 .loading {{ 
                     display: none;
                     text-align: center;
