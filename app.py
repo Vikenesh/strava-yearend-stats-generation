@@ -707,6 +707,8 @@ def analyze():
 def get_stats_page():
     logger.info("get_stats_page called")
     try:
+        # initialize kudos_html early so later formatting cannot fail
+        kudos_html = ''
         # Get token from session
         if 'access_token' not in session:
             logger.warning("No access token in session, redirecting to login")
