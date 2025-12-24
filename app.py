@@ -66,9 +66,12 @@ TOKEN_EXPIRY_BUFFER = 300  # 5 minutes buffer for token expiry
 ACTIVITIES_PER_PAGE = 200  # Max activities per page from Strava API
 # KUDOS cache settings
 KUDOS_CACHE_TTL = int(os.environ.get('KUDOS_CACHE_TTL', 600))  # seconds
+KUDOS_RATE_LIMIT_DELAY = float(os.environ.get('KUDOS_RATE_LIMIT_DELAY', 0.1))  # seconds between requests
 
 # Simple in-memory cache for kudos: { activity_id: (timestamp, data_list) }
 _KUDOS_CACHE = {}
+# Rate limiting tracker
+_LAST_KUDOS_REQUEST_TIME = 0
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to Indian Standard Time (IST) timezone.
@@ -267,12 +270,57 @@ def get_all_activities():
     headers = {'Authorization': f'Bearer {token}'}
     all_activities = []
     page = 1
+    # Helper for requests with retry/backoff for rate limiting and transient errors
+    def _get_with_retries(url, headers, max_retries=5):
+        attempt = 0
+        backoff = 1
+        while True:
+            try:
+                resp = requests.get(url, headers=headers, timeout=15)
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request exception for {url}: {e}")
+                attempt += 1
+                if attempt > max_retries:
+                    raise
+                sleep_time = backoff
+                backoff = min(backoff * 2, 60)
+                logger.info(f"Sleeping {sleep_time}s before retrying request after exception")
+                time.sleep(sleep_time)
+                continue
+
+            # Rate limit handling
+            if resp.status_code == 429:
+                retry_after = resp.headers.get('Retry-After')
+                try:
+                    wait = int(retry_after) if retry_after else backoff
+                except Exception:
+                    wait = backoff
+                logger.warning(f"Received 429 for {url}, retrying after {wait}s")
+                attempt += 1
+                if attempt > max_retries:
+                    return resp
+                time.sleep(wait)
+                backoff = min(backoff * 2, 60)
+                continue
+
+            # Transient server errors
+            if resp.status_code in (500, 502, 503, 504):
+                attempt += 1
+                if attempt > max_retries:
+                    return resp
+                logger.warning(f"Server error {resp.status_code} for {url}, retrying in {backoff}s")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+
+            return resp
+
     
     logger.info("Fetching activities...")
     while True:
         url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
         logger.debug(f"Fetching page {page}")
-        response = requests.get(url, headers=headers)
+        response = _get_with_retries(url, headers)
         
         # Handle 401/403 errors - try token refresh
         if response.status_code in [401, 403]:
@@ -280,7 +328,7 @@ def get_all_activities():
             if refresh_access_token():
                 token = session['access_token']
                 headers = {'Authorization': f'Bearer {token}'}
-                response = requests.get(url, headers=headers)
+                response = _get_with_retries(url, headers)
             else:
                 logger.error("Token refresh failed, cannot fetch activities")
                 return None
@@ -1578,27 +1626,39 @@ def download_activities():
     return jsonify({'error': 'Unsupported format'}), 400
 
 
-def get_activity_kudos(activity_id, per_page=200):
+def get_activity_kudos(activity_id, per_page=200, force_refresh=False):
     """Fetch kudos (athlete objects) for a given activity id with pagination.
 
     per_page: number of items per page to request from Strava (max 200)
+    force_refresh: bypass cache and fetch fresh data
     """
     logger.info(f"Fetching kudos for activity {activity_id} (per_page={per_page})")
 
     # Check cache first
-    try:
-        cached = _KUDOS_CACHE.get(activity_id)
-        if cached:
-            ts, data = cached
-            if (time.time() - ts) < KUDOS_CACHE_TTL:
-                logger.debug(f"Kudos cache hit for {activity_id}")
-                return data
-            else:
-                # expired
-                _KUDOS_CACHE.pop(activity_id, None)
-    except Exception:
-        # if cache fails, continue to fetch
-        pass
+    if not force_refresh:
+        try:
+            cached = _KUDOS_CACHE.get(activity_id)
+            if cached:
+                ts, data = cached
+                if (time.time() - ts) < KUDOS_CACHE_TTL:
+                    logger.debug(f"Kudos cache hit for {activity_id}")
+                    return data
+                else:
+                    # expired
+                    _KUDOS_CACHE.pop(activity_id, None)
+        except Exception:
+            # if cache fails, continue to fetch
+            pass
+
+    # Rate limiting between kudos requests
+    global _LAST_KUDOS_REQUEST_TIME
+    current_time = time.time()
+    time_since_last = current_time - _LAST_KUDOS_REQUEST_TIME
+    if time_since_last < KUDOS_RATE_LIMIT_DELAY:
+        sleep_time = KUDOS_RATE_LIMIT_DELAY - time_since_last
+        logger.debug(f"Rate limiting kudos request: sleeping {sleep_time:.2f}s")
+        time.sleep(sleep_time)
+    _LAST_KUDOS_REQUEST_TIME = time.time()
 
     token = get_valid_access_token()
     if not token:
@@ -1686,7 +1746,13 @@ def activity_kudos_route(activity_id):
 
 @app.route('/kudos/top-giver')
 def top_kudos_giver():
-    """Aggregate kudos across all activities for the logged-in athlete and return the top giver."""
+    """Aggregate kudos across all activities for the logged-in athlete and return the top giver.
+    
+    Optimized for API limits:
+    - Only fetches kudos for recent activities (last 50)
+    - Uses cached data when available
+    - Implements rate limiting between requests
+    """
     logger.info("Route /kudos/top-giver called")
     if 'access_token' not in session:
         logger.warning("No access token in session, redirecting to login")
@@ -1697,14 +1763,38 @@ def top_kudos_giver():
         logger.error("Failed to fetch activities while computing top giver")
         return redirect('/login')
 
+    # Optimization: Only process recent activities to reduce API calls
+    recent_activities = activities[:50]  # Limit to 50 most recent activities
+    logger.info(f"Processing kudos for {len(recent_activities)} recent activities (out of {len(activities)} total)")
+
     giver_counts = defaultdict(int)
     giver_info = {}
+    api_calls_made = 0
+    cache_hits = 0
 
-    for act in activities:
+    for act in recent_activities:
         aid = act.get('id')
         if not aid:
             continue
-        kudos = get_activity_kudos(aid) or []
+            
+        # Check cache first
+        cached = _KUDOS_CACHE.get(aid)
+        if cached:
+            ts, data = cached
+            if (time.time() - ts) < KUDOS_CACHE_TTL:
+                kudos = data
+                cache_hits += 1
+                logger.debug(f"Using cached kudos for activity {aid}")
+            else:
+                kudos = get_activity_kudos(aid)
+                api_calls_made += 1
+        else:
+            kudos = get_activity_kudos(aid)
+            api_calls_made += 1
+            
+        if not kudos:
+            continue
+            
         for person in kudos:
             pid = person.get('id')
             if not pid:
@@ -1717,6 +1807,8 @@ def top_kudos_giver():
                 'lastname': person.get('lastname'),
                 'profile': person.get('profile')
             }
+
+    logger.info(f"Kudos aggregation complete: {api_calls_made} API calls, {cache_hits} cache hits")
 
     if not giver_counts:
         return jsonify({'message': 'No kudos found across activities', 'top_giver': None, 'leaderboard': []})
