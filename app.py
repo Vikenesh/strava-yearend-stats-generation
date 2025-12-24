@@ -10,7 +10,7 @@ import time
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, redirect, session, url_for
+from flask import Flask, request, redirect, session, url_for, jsonify
 import requests
 
 # Application Configuration
@@ -51,6 +51,11 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
 TOKEN_REFRESH_BUFFER = 300  # 5 minutes buffer for token refresh
 TOKEN_EXPIRY_BUFFER = 300  # 5 minutes buffer for token expiry
 ACTIVITIES_PER_PAGE = 200  # Max activities per page from Strava API
+# KUDOS cache settings
+KUDOS_CACHE_TTL = int(os.environ.get('KUDOS_CACHE_TTL', 600))  # seconds
+
+# Simple in-memory cache for kudos: { activity_id: (timestamp, data_list) }
+_KUDOS_CACHE = {}
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to Indian Standard Time (IST) timezone.
@@ -782,6 +787,42 @@ def get_stats_page():
         runs_2025_count = len(runs_2025)
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
         display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
+
+        # Compute top-3 kudos givers across activities (server-side)
+        try:
+            kudos_counts = defaultdict(int)
+            kudos_info = {}
+            # use smaller per_page to limit API calls
+            per_page_for_kudos = 30
+            for act in activities:
+                act_id = act.get('id')
+                if not act_id:
+                    continue
+                kudos_list = get_activity_kudos(act_id, per_page=per_page_for_kudos) or []
+                for p in kudos_list:
+                    pid = p.get('id')
+                    if not pid:
+                        continue
+                    kudos_counts[pid] += 1
+                    if pid not in kudos_info:
+                        kudos_info[pid] = {'firstname': p.get('firstname'), 'lastname': p.get('lastname'), 'profile': p.get('profile')}
+
+            leaderboard = sorted([
+                {'id': pid, 'count': cnt, **kudos_info.get(pid, {})} for pid, cnt in kudos_counts.items()
+            ], key=lambda x: x['count'], reverse=True)
+
+            top3 = leaderboard[:3]
+            if top3:
+                kudos_html = '<p><strong>Top 3 Kudos Givers:</strong></p><ol>'
+                for g in top3:
+                    name = ((g.get('firstname') or '') + ' ' + (g.get('lastname') or '')).strip() or 'Anonymous'
+                    kudos_html += f"<li>{name} — {g.get('count', 0)} kudos</li>"
+                kudos_html += '</ol>'
+            else:
+                kudos_html = '<p><em>No kudos found across activities.</em></p>'
+        except Exception as e:
+            logger.warning(f"Error computing kudos leaderboard: {e}")
+            kudos_html = '<p><em>Could not compute kudos leaderboard.</em></p>'
         
         # Pre-generate CSV data for JavaScript
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
@@ -1076,6 +1117,7 @@ def get_stats_page():
                             <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
                             <p><strong>Other Activities:</strong> {other_activities_count}</p>
                             {display_info}
+                            {kudos_html}
                         </div>
                     </div>
                     <div>
@@ -1348,6 +1390,170 @@ def poster():
     except Exception as e:
         logger.error(f"Error reading poster template: {e}")
         return f'<h1>Error</h1><p>Could not load poster template: {e}</p>'
+
+
+def get_activity_kudos(activity_id, per_page=200):
+    """Fetch kudos (athlete objects) for a given activity id with pagination.
+
+    per_page: number of items per page to request from Strava (max 200)
+    """
+    logger.info(f"Fetching kudos for activity {activity_id} (per_page={per_page})")
+
+    # Check cache first
+    try:
+        cached = _KUDOS_CACHE.get(activity_id)
+        if cached:
+            ts, data = cached
+            if (time.time() - ts) < KUDOS_CACHE_TTL:
+                logger.debug(f"Kudos cache hit for {activity_id}")
+                return data
+            else:
+                # expired
+                _KUDOS_CACHE.pop(activity_id, None)
+    except Exception:
+        # if cache fails, continue to fetch
+        pass
+
+    token = get_valid_access_token()
+    if not token:
+        logger.error("No valid access token available for fetching kudos")
+        return None
+
+    # sanitize per_page
+    try:
+        per_page = int(per_page)
+    except Exception:
+        per_page = 200
+    if per_page <= 0:
+        per_page = 200
+    if per_page > 200:
+        per_page = 200
+
+    headers = {'Authorization': f'Bearer {token}'}
+    all_kudos = []
+    page = 1
+
+    while True:
+        url = f'https://www.strava.com/api/v3/activities/{activity_id}/kudos?page={page}&per_page={per_page}'
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error fetching kudos for {activity_id}: {e}")
+            return None
+
+        # Try token refresh on auth error
+        if response.status_code in (401, 403):
+            logger.warning(f"Auth error ({response.status_code}) fetching kudos, attempting token refresh")
+            if refresh_access_token():
+                headers = {'Authorization': f"Bearer {session.get('access_token') }"}
+                response = requests.get(url, headers=headers, timeout=10)
+            else:
+                logger.error("Token refresh failed while fetching kudos")
+                return None
+
+        if response.status_code != 200:
+            logger.error(f"Failed to fetch kudos for {activity_id}: {response.status_code} - {response.text}")
+            return None
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.error(f"Error parsing kudos JSON for {activity_id}: {e}")
+            return None
+
+        if not data:
+            break
+
+        all_kudos.extend(data)
+        page += 1
+        if page > 10:
+            logger.warning("Kudos pagination safety limit reached")
+            break
+
+    logger.info(f"Fetched {len(all_kudos)} kudos for activity {activity_id}")
+
+    # store in cache
+    try:
+        _KUDOS_CACHE[activity_id] = (time.time(), all_kudos)
+    except Exception:
+        pass
+
+    return all_kudos
+
+
+@app.route('/activities/<int:activity_id>/kudos')
+def activity_kudos_route(activity_id):
+    """Return list of kudos for a single activity as JSON."""
+    logger.info(f"Route /activities/{activity_id}/kudos called")
+    if 'access_token' not in session:
+        logger.warning("No access token in session, redirecting to login")
+        return redirect('/login')
+
+    # allow client to request smaller/larger per_page (capped at 200)
+    per_page = request.args.get('per_page', None)
+    kudos = get_activity_kudos(activity_id, per_page=per_page)
+    if kudos is None:
+        return jsonify({'error': 'Failed to fetch kudos for activity', 'activity_id': activity_id}), 500
+
+    return jsonify({'activity_id': activity_id, 'kudos_count': len(kudos), 'kudos': kudos})
+
+
+@app.route('/kudos/top-giver')
+def top_kudos_giver():
+    """Aggregate kudos across all activities for the logged-in athlete and return the top giver."""
+    logger.info("Route /kudos/top-giver called")
+    if 'access_token' not in session:
+        logger.warning("No access token in session, redirecting to login")
+        return redirect('/login')
+
+    activities = get_all_activities()
+    if activities is None:
+        logger.error("Failed to fetch activities while computing top giver")
+        return redirect('/login')
+
+    giver_counts = defaultdict(int)
+    giver_info = {}
+
+    for act in activities:
+        aid = act.get('id')
+        if not aid:
+            continue
+        kudos = get_activity_kudos(aid) or []
+        for person in kudos:
+            pid = person.get('id')
+            if not pid:
+                continue
+            giver_counts[pid] += 1
+            # store latest info
+            giver_info[pid] = {
+                'id': pid,
+                'firstname': person.get('firstname'),
+                'lastname': person.get('lastname'),
+                'profile': person.get('profile')
+            }
+
+    if not giver_counts:
+        return jsonify({'message': 'No kudos found across activities', 'top_giver': None, 'leaderboard': []})
+
+    # Build leaderboard
+    leaderboard = sorted([
+        {'id': pid, 'count': cnt, **giver_info.get(pid, {})} for pid, cnt in giver_counts.items()
+    ], key=lambda x: x['count'], reverse=True)
+
+    # Allow client to request top-N (default 3)
+    try:
+        limit = int(request.args.get('limit', 3))
+    except Exception:
+        limit = 3
+    if limit <= 0:
+        limit = 3
+    if limit > 50:
+        limit = 50
+
+    top_n = leaderboard[:limit]
+    top = top_n[0] if top_n else None
+
+    return jsonify({'top_givers': top_n, 'top_giver': top, 'leaderboard_count': len(leaderboard)})
 
 if __name__ == '__main__':
     logger.info("Starting Flask app...")
