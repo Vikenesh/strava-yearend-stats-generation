@@ -1144,9 +1144,9 @@ def get_stats_page():
                     <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
                     <button class="copy-btn" onclick="window.open('/poster', '_blank')">Open Poster</button>
-                    <a class="copy-btn" href="/download/activities?format=csv" style="display:inline-block; text-align:center;">Download CSV</a>
-                    <a class="copy-btn" href="/download/activities?format=excel" style="display:inline-block; text-align:center;">Download Excel</a>
-                    <a class="copy-btn" href="/download/activities?format=pdf" style="display:inline-block; text-align:center;">Download PDF</a>
+                    <button class="copy-btn" onclick="startDownload('csv')" style="display:inline-block; text-align:center;">Download CSV</button>
+                    <button class="copy-btn" onclick="startDownload('excel')" style="display:inline-block; text-align:center;">Download Excel</button>
+                    <button class="copy-btn" onclick="startDownload('pdf')" style="display:inline-block; text-align:center;">Download PDF</button>
                 </div>
                 
                 <div class="table-container">
@@ -1163,8 +1163,17 @@ def get_stats_page():
                         </tbody>
                     </table>
                 </div>
+                </div>
+
+            <div id="downloadOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+                <div style="text-align:center; color:white; display:flex; align-items:center; justify-content:center; height:100%;">
+                    <div style="display:flex; flex-direction:column; align-items:center;">
+                        <div class="spinner" style="width:48px; height:48px; border-width:4px; border-top-color:#fff;"></div>
+                        <div style="margin-top:10px; font-size:1.1rem;">Preparing download...</div>
+                    </div>
+                </div>
             </div>
-            
+
             <script>
                 // Add interactive features
                 document.addEventListener('DOMContentLoaded', function() {{
@@ -1293,6 +1302,17 @@ ${{csvData}}`;
                     navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
                         alert('Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.');
                     }});
+                }}
+
+                function startDownload(fmt) {{
+                    const overlay = document.getElementById('downloadOverlay');
+                    if (overlay) {{
+                        overlay.style.display = 'flex';
+                    }}
+                    // Give browser a moment to paint overlay before navigation
+                    setTimeout(function() {{
+                        window.location.href = '/download/activities?format=' + encodeURIComponent(fmt);
+                    }}, 150);
                 }}
             </script>
         </body>
