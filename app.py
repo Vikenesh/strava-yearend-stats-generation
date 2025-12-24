@@ -7,11 +7,24 @@ import json
 import logging
 import os
 import time
+import io
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, redirect, session, url_for, jsonify
+from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
 import requests
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+except Exception:
+    # reportlab not available
+    colors = None
 
 # Application Configuration
 # ======================
@@ -1131,6 +1144,9 @@ def get_stats_page():
                     <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
                     <button class="copy-btn" onclick="window.open('/poster', '_blank')">Open Poster</button>
+                    <a class="copy-btn" href="/download/activities?format=csv" style="display:inline-block; text-align:center;">Download CSV</a>
+                    <a class="copy-btn" href="/download/activities?format=excel" style="display:inline-block; text-align:center;">Download Excel</a>
+                    <a class="copy-btn" href="/download/activities?format=pdf" style="display:inline-block; text-align:center;">Download PDF</a>
                 </div>
                 
                 <div class="table-container">
@@ -1390,6 +1406,122 @@ def poster():
     except Exception as e:
         logger.error(f"Error reading poster template: {e}")
         return f'<h1>Error</h1><p>Could not load poster template: {e}</p>'
+
+
+def _get_display_runs():
+    """Return runs used for display/download: prefer session-stored runs_2025_json else fetch and filter."""
+    runs_json = session.get('runs_2025_json')
+    if runs_json:
+        try:
+            runs = json.loads(runs_json)
+            return runs
+        except Exception:
+            pass
+
+    activities = get_all_activities()
+    if activities is None:
+        return None
+
+    runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
+    return runs_2025
+
+
+@app.route('/download/activities')
+def download_activities():
+    """Download activity data as CSV, Excel, or PDF. Query param `format` = csv|excel|pdf (default csv)."""
+    logger.info("/download/activities called")
+    if 'access_token' not in session:
+        logger.warning('No access token in session, redirecting to login')
+        return redirect('/login')
+
+    fmt = (request.args.get('format') or 'csv').lower()
+    runs = _get_display_runs()
+    if runs is None:
+        return redirect('/login')
+
+    # Build rows
+    rows = []
+    for run in runs:
+        try:
+            utc_date_str = run.get('start_date')
+            if utc_date_str:
+                utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
+                ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
+            else:
+                date = ''
+
+            name = run.get('name', '')
+            distance = round(float(run.get('distance', 0)) / 1000, 2)
+            time_sec = int(run.get('moving_time', 0))
+            if time_sec > 0 and distance > 0:
+                pace_min_per_km = time_sec / 60 / distance
+                pace_str = f"{int(pace_min_per_km)}:{int((pace_min_per_km - int(pace_min_per_km)) * 60):02d}"
+            else:
+                pace_str = ''
+
+            hours = time_sec // 3600
+            minutes = (time_sec % 3600) // 60
+            seconds = time_sec % 60
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+            rows.append({'Date': date, 'Activity': name, 'Distance (km)': distance, 'Duration': time_str, 'Pace (min/km)': pace_str})
+        except Exception:
+            continue
+
+    if fmt == 'csv':
+        # build CSV
+        out = io.StringIO()
+        headers = ['Date', 'Activity', 'Distance (km)', 'Duration', 'Pace (min/km)']
+        out.write(','.join(headers) + '\n')
+        for r in rows:
+            line = ','.join('"' + str(r.get(h, '')).replace('"', '""') + '"' for h in headers)
+            out.write(line + '\n')
+        out.seek(0)
+        return Response(out.getvalue(), mimetype='text/csv', headers={
+            'Content-Disposition': 'attachment; filename="activities_2025.csv"'
+        })
+
+    if fmt == 'excel' or fmt == 'xlsx':
+        if pd is None:
+            return jsonify({'error': 'pandas not installed on server'}), 500
+        df = pd.DataFrame(rows)
+        bio = io.BytesIO()
+        try:
+            df.to_excel(bio, index=False, engine='openpyxl')
+        except Exception as e:
+            logger.error(f"Error writing excel: {e}")
+            return jsonify({'error': 'Failed to generate excel'}), 500
+        bio.seek(0)
+        return send_file(bio, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', download_name='activities_2025.xlsx', as_attachment=True)
+
+    if fmt == 'pdf':
+        if colors is None:
+            return jsonify({'error': 'reportlab not installed on server'}), 500
+        bio = io.BytesIO()
+        doc = SimpleDocTemplate(bio, pagesize=A4)
+        data = [['Date', 'Activity', 'Distance (km)', 'Duration', 'Pace (min/km)']]
+        for r in rows:
+            data.append([r['Date'], r['Activity'], str(r['Distance (km)']), r['Duration'], r['Pace (min/km)']])
+        table = Table(data, repeatRows=1)
+        style = TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('ALIGN', (2,1), (2,-1), 'RIGHT')
+        ])
+        table.setStyle(style)
+        elems = [table]
+        try:
+            doc.build(elems)
+        except Exception as e:
+            logger.error(f"Error building PDF: {e}")
+            return jsonify({'error': 'Failed to generate PDF'}), 500
+        bio.seek(0)
+        return send_file(bio, mimetype='application/pdf', download_name='activities_2025.pdf', as_attachment=True)
+
+    return jsonify({'error': 'Unsupported format'}), 400
 
 
 def get_activity_kudos(activity_id, per_page=200):
