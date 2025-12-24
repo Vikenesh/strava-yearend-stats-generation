@@ -715,6 +715,13 @@ def get_stats_page():
         # Sort by date (newest first)
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
         logger.info("Sorted runs by date (newest first)")
+
+        # Save raw 2025 runs JSON in session so poster uses exactly the same raw data
+        try:
+            session['runs_2025_json'] = json.dumps(runs_2025)
+            logger.debug('Stored runs_2025_json in session for poster rendering')
+        except Exception as e:
+            logger.warning(f'Could not store runs_2025 in session: {e}')
         
         # Create table rows for 2025 runs only - display all runs
         logger.info("Creating table rows for display")
@@ -1263,9 +1270,20 @@ def poster():
     if activities is None:
         logger.error("Failed to fetch activities for poster")
         return redirect('/login')
+    # Prefer using runs saved in session by the stats page (raw CSV source)
+    runs_2025 = None
+    runs_json = session.get('runs_2025_json')
+    if runs_json:
+        try:
+            runs_2025 = json.loads(runs_json)
+            logger.info('Loaded runs_2025 from session for poster')
+        except Exception as e:
+            logger.warning(f'Could not parse runs_2025_json from session: {e}')
 
-    # Limit poster to 2025 runs to match stats page
-    runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
+    # Fallback: compute from fetched activities
+    if runs_2025 is None:
+        runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
+
     if not runs_2025:
         logger.info('No 2025 runs found for poster')
         return '<h1>No 2025 running activities found to render poster.</h1><p><a href="/">Back</a></p>'
