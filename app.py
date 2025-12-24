@@ -1325,6 +1325,7 @@ ${{csvData}}`;
             runs_2025_count=runs_2025_count,
             other_activities_count=other_activities_count,
             display_info=display_info,
+            kudos_html=kudos_html,
             csv_data=csv_data,
             activities=activities,
             runs_2025=runs_2025,
