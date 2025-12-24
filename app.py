@@ -29,12 +29,13 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-202
 
 # API Configuration
 # ----------------
-# Strava API credentials from environment variables
-CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID', '97523')
-CLIENT_SECRET = os.environ.get(
-    'STRAVA_CLIENT_SECRET',
-    '71237e6f5f32982cc16c6056e9fb78c2c246d102'
-)
+# Strava API credentials from environment variables (no hardcoded defaults)
+CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID')
+CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
+
+# Warn on startup if credentials are missing
+if not CLIENT_ID or not CLIENT_SECRET:
+    logger.warning('STRAVA_CLIENT_ID or STRAVA_CLIENT_SECRET not set. Ensure Railway shared variables are configured.')
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
@@ -1066,6 +1067,7 @@ def get_stats_page():
                         </div>
                     </div>
                     <div>
+                        <a href="/poster" style="color: white; text-decoration: none; font-weight: 600; margin-right:12px;">View Poster</a>
                         <a href="/logout" style="color: white; text-decoration: none; font-weight: 600;">Logout</a>
                     </div>
                 </div>
@@ -1074,6 +1076,7 @@ def get_stats_page():
                     <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
                     <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
+                    <button class="copy-btn" onclick="window.open('/poster', '_blank')">Open Poster</button>
                 </div>
                 
                 <div class="table-container">
@@ -1241,6 +1244,81 @@ ${{csvData}}`;
     except Exception as e:
         logger.error(f"Error in get_stats_page: {str(e)}")
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
+
+
+@app.route('/poster')
+def poster():
+    """Serve the Rough.js poster template with injected Strava summary JSON."""
+    logger.info("Poster route accessed")
+    if 'access_token' not in session:
+        logger.warning("No access token in session, redirecting to login for poster")
+        return redirect('/login')
+
+    activities = get_all_activities()
+    if activities is None:
+        logger.error("Failed to fetch activities for poster")
+        return redirect('/login')
+
+    # Use existing analysis helper
+    try:
+        summary = analyze_wrapped_stats(activities)
+    except Exception as e:
+        logger.error(f"Error computing summary for poster: {e}")
+        summary = None
+
+    if not summary:
+        return '<h1>No running activities found to render poster.</h1><p><a href="/">Back</a></p>'
+
+    athlete = session.get('athlete_info', {})
+    athlete_name_display = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
+
+    # Prepare poster data
+    monthly = {k: round(v['distance'], 2) if isinstance(v, dict) and 'distance' in v else round(float(v), 2) for k, v in summary.get('monthly_stats', {}).items()}
+    # If monthly values are nested dicts from earlier code path, handle both shapes
+    if not monthly:
+        monthly = {k: round(float(v), 2) for k, v in (summary.get('monthly_stats') or {}).items()}
+
+    # Top month
+    top_month = None
+    top_km = 0
+    try:
+        for k, v in monthly.items():
+            if v > top_km:
+                top_km = v
+                top_month = k
+    except Exception:
+        pass
+
+    trends = []
+    fav_day = summary.get('favorite_day')
+    if fav_day:
+        trends.append(f"Favorite day: {fav_day[0]} ({fav_day[1]} runs)")
+    if top_month:
+        trends.append(f"Peak month: {top_month} — {top_km} km")
+    trends.append(f"Average pace: {summary.get('avg_pace', 0)} min/km")
+
+    poster_data = {
+        'athlete': athlete_name_display.strip(),
+        'total_runs': summary.get('total_activities', 0),
+        'total_distance_km': summary.get('total_distance', 0),
+        'monthly': monthly,
+        'current_streak': summary.get('current_streak', 0),
+        'max_streak': summary.get('max_streak', 0),
+        'early_bird_count': summary.get('early_bird_count', 0),
+        'night_owl_count': summary.get('night_owl_count', 0),
+        'trends': trends
+    }
+
+    # Load template and inject JSON
+    try:
+        tpl_path = os.path.join(os.path.dirname(__file__), 'poster_template.html')
+        with open(tpl_path, 'r', encoding='utf-8') as f:
+            tpl = f.read()
+        injected = tpl.replace('__SAMPLE_DATA__', json.dumps(poster_data))
+        return injected
+    except Exception as e:
+        logger.error(f"Error reading poster template: {e}")
+        return f'<h1>Error</h1><p>Could not load poster template: {e}</p>'
 
 if __name__ == '__main__':
     logger.info("Starting Flask app...")

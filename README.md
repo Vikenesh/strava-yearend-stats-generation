@@ -68,3 +68,18 @@ python app.py
 - **APIs**: Strava API, OpenAI API
 - **Deployment**: Render.com
 - **Styling**: Inline CSS
+
+## Poster (Rough.js)
+
+After you log in with Strava and the app has fetched your activities, open the poster view to generate a doodle-style summary:
+
+- Start the app locally:
+
+```bash
+python app.py
+```
+
+- Log in at `http://localhost:5000` using the Strava OAuth flow.
+- Open `http://localhost:5000/poster` to view and export the Rough.js doodle poster.
+
+The poster is generated client-side from a JSON summary injected by the server. Use `/poster` after successful login.
