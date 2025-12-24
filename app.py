@@ -803,41 +803,8 @@ def get_stats_page():
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
         display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
 
-        # Compute top-3 kudos givers across activities (server-side)
-        try:
-            kudos_counts = defaultdict(int)
-            kudos_info = {}
-            # use smaller per_page to limit API calls
-            per_page_for_kudos = 30
-            for act in activities:
-                act_id = act.get('id')
-                if not act_id:
-                    continue
-                kudos_list = get_activity_kudos(act_id, per_page=per_page_for_kudos) or []
-                for p in kudos_list:
-                    pid = p.get('id')
-                    if not pid:
-                        continue
-                    kudos_counts[pid] += 1
-                    if pid not in kudos_info:
-                        kudos_info[pid] = {'firstname': p.get('firstname'), 'lastname': p.get('lastname'), 'profile': p.get('profile')}
-
-            leaderboard = sorted([
-                {'id': pid, 'count': cnt, **kudos_info.get(pid, {})} for pid, cnt in kudos_counts.items()
-            ], key=lambda x: x['count'], reverse=True)
-
-            top3 = leaderboard[:3]
-            if top3:
-                kudos_html = '<p><strong>Top 3 Kudos Givers:</strong></p><ol>'
-                for g in top3:
-                    name = ((g.get('firstname') or '') + ' ' + (g.get('lastname') or '')).strip() or 'Anonymous'
-                    kudos_html += f"<li>{name} — {g.get('count', 0)} kudos</li>"
-                kudos_html += '</ol>'
-            else:
-                kudos_html = '<p><em>No kudos found across activities.</em></p>'
-        except Exception as e:
-            logger.warning(f"Error computing kudos leaderboard: {e}")
-            kudos_html = '<p><em>Could not compute kudos leaderboard.</em></p>'
+        # Placeholder kudos section — client will fetch top-3 asynchronously
+        kudos_html = '<div id="kudos-section"><p><strong>Top 3 Kudos Givers:</strong> <span id="kudos-loading">Good things come for those who wait!! Loading top kudos...</span></p></div>'
         
         # Pre-generate CSV data for JavaScript
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
@@ -1202,6 +1169,12 @@ def get_stats_page():
                             this.style.transform = 'translateY(0) scale(1)';
                         }});
                     }});
+                    // Fetch top kudos after initial page paint
+                    try {{
+                        if (typeof fetchTopKudos === 'function') fetchTopKudos();
+                    }} catch (e) {{
+                        console.warn('fetchTopKudos error', e);
+                    }}
                 }});
                 
                 function copyTableData() {{
@@ -1315,6 +1288,34 @@ ${{csvData}}`;
                     setTimeout(function() {{
                         window.location.href = '/download/activities?format=' + encodeURIComponent(fmt);
                     }}, 150);
+                }}
+
+                function fetchTopKudos() {{
+                    const section = document.getElementById('kudos-section');
+                    if (!section) return;
+                    const loading = document.getElementById('kudos-loading');
+                    if (loading) loading.innerText = 'Loading top kudos...';
+
+                    fetch('/kudos/top-giver?limit=3')
+                        .then(resp => resp.json())
+                        .then(data => {{
+                            if (!data || !data.top_givers) {{
+                                if (loading) loading.innerText = 'No kudos available.';
+                                return;
+                            }}
+                            const top = data.top_givers;
+                            let html = '<p><strong>Top 3 Kudos Givers:</strong></p><ol>';
+                            top.forEach(g => {{
+                                const name = ((g.firstname || '') + ' ' + (g.lastname || '')).trim() || (g.name || 'Anonymous');
+                                html += `<li>${{name}} — ${{g.count}} kudos</li>`;
+                            }});
+                            html += '</ol>';
+                            section.innerHTML = html;
+                        }})
+                        .catch(err => {{
+                            console.warn('Error fetching top kudos', err);
+                            if (loading) loading.innerText = 'Could not load top kudos.';
+                        }});
                 }}
             </script>
         </body>
