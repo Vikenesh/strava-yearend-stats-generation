@@ -36,6 +36,11 @@ CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
 # Warn on startup if credentials are missing
 if not CLIENT_ID or not CLIENT_SECRET:
     logger.warning('STRAVA_CLIENT_ID or STRAVA_CLIENT_SECRET not set. Ensure Railway shared variables are configured.')
+else:
+    logger.info('STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET found in environment')
+
+# Log presence of other important vars (don't log secret values)
+logger.info(f"OPENAI_API_KEY present: {'OPENAI_API_KEY' in os.environ}")
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
@@ -535,8 +540,8 @@ def index():
 @app.route('/login')
 def login():
     logger.info("Login route accessed")
-    logger.debug(f"CLIENT_ID = {CLIENT_ID}")
-    logger.debug(f"REDIRECT_URI = {REDIRECT_URI}")
+    logger.info(f"CLIENT_ID present: {bool(CLIENT_ID)}")
+    logger.info(f"REDIRECT_URI = {REDIRECT_URI}")
     ##auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
     auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
     logger.debug(f"Full auth URL = {auth_url}")
