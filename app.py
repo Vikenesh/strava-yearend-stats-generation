@@ -1264,9 +1264,15 @@ def poster():
         logger.error("Failed to fetch activities for poster")
         return redirect('/login')
 
-    # Use existing analysis helper
+    # Limit poster to 2025 runs to match stats page
+    runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
+    if not runs_2025:
+        logger.info('No 2025 runs found for poster')
+        return '<h1>No 2025 running activities found to render poster.</h1><p><a href="/">Back</a></p>'
+
+    # Use existing analysis helper on 2025 runs
     try:
-        summary = analyze_wrapped_stats(activities)
+        summary = analyze_wrapped_stats(runs_2025)
     except Exception as e:
         logger.error(f"Error computing summary for poster: {e}")
         summary = None
