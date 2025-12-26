@@ -731,22 +731,48 @@ def get_stats_page():
         # Start Streamlit in a separate thread with full Python path
         def run_streamlit():
             try:
-                # Get the Python executable path
+                # Get the Python executable path and verify streamlit is importable
                 python_path = sys.executable
+                
+                # Test if streamlit is importable
+                try:
+                    import streamlit
+                    logger.info(f"Streamlit version: {streamlit.__version__}")
+                except ImportError as e:
+                    logger.error(f"Streamlit import failed: {str(e)}")
+                    logger.error("Please install streamlit using: pip install streamlit==1.28.0")
+                    return
+                
+                # Build the command
+                port = os.environ.get("PORT", "8501")
                 cmd = [
                     python_path, '-m', 'streamlit', 'run', 'dashboard.py',
-                    f'--server.port={os.environ.get("PORT", "8501")}',
+                    f'--server.port={port}',
                     '--server.address=0.0.0.0',
                     '--server.enableCORS=false',
                     '--server.enableXsrfProtection=false',
                     '--server.headless=true',
-                    '--browser.gatherUsageStats=false'
+                    '--browser.gatherUsageStats=false',
+                    '--logger.level=debug'
                 ]
+                
                 logger.info(f"Starting Streamlit with command: {' '.join(cmd)}")
+                logger.info(f"Python path: {python_path}")
+                logger.info(f"Working directory: {os.getcwd()}")
+                
+                # Set up environment with current environment plus any necessary overrides
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.getcwd()
+                
+                # Start the process
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
                 )
                 # Log output in background
                 def log_output(pipe, logger_func):
