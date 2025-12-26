@@ -142,6 +142,62 @@ def get_valid_access_token():
     
     return session['access_token']
 
+def get_all_activities():
+    """Fetch all activities from Strava API with pagination."""
+    if 'access_token' not in session:
+        logger.warning("No access token in session")
+        return None
+    
+    all_activities = []
+    page = 1
+    per_page = 200  # Maximum allowed by Strava API
+    access_token = get_valid_access_token()
+    
+    if not access_token:
+        logger.error("No valid access token available")
+        return None
+    
+    try:
+        while True:
+            # Make request to Strava API
+            headers = {'Authorization': f'Bearer {access_token}'}
+            params = {'per_page': per_page, 'page': page}
+            
+            response = requests.get(
+                'https://www.strava.com/api/v3/athlete/activities',
+                headers=headers,
+                params=params
+            )
+            
+            # Handle rate limiting
+            if response.status_code == 429:
+                retry_after = int(response.headers.get('Retry-After', 60))
+                logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
+                time.sleep(retry_after)
+                continue
+                
+            if response.status_code != 200:
+                logger.error(f"Error fetching activities: {response.status_code} - {response.text}")
+                return None
+                
+            activities = response.json()
+            if not activities:
+                break
+                
+            all_activities.extend(activities)
+            logger.info(f"Fetched page {page} with {len(activities)} activities")
+            page += 1
+            
+            # Small delay to avoid hitting rate limits
+            time.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"Error in get_all_activities: {str(e)}")
+        return None
+        
+    logger.info(f"Total activities fetched: {len(all_activities)}")
+    return all_activities
+
 # Routes
 # ======
 
