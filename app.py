@@ -104,9 +104,19 @@ def utc_to_ist(utc_datetime_str):
         return None
 
 def analyze_wrapped_stats(activities):
-    """Analyze activities for wrapped-style visualization"""
+    """Analyze activities for wrapped-style visualization
+    
+    Args:
+        activities: List of activity dictionaries with minimal fields:
+            - 't': activity type
+            - 'd': start date (YYYY-MM-DD)
+            - 'm': distance in meters
+            - 's': average speed in m/s
+            - 'e': elapsed time in seconds
+    """
     logger.info("analyze_wrapped_stats called")
-    runs = [a for a in activities if a['type'] == 'Run']
+    # Use 't' for type in the minimal format
+    runs = [a for a in activities if a.get('t') == 'Run']
     
     if not runs:
         logger.info("No runs found")
