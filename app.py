@@ -13,15 +13,11 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
 import requests
-from openai import OpenAI
 
 try:
     import pandas as pd
 except Exception:
     pd = None
-
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 try:
     from reportlab.lib import colors
@@ -1514,49 +1510,6 @@ def poster():
         logger.error(f"Error reading poster template: {e}")
         return f'<h1>Error</h1><p>Could not load poster template: {e}</p>'
 
-
-@app.route('/generate_poster_image', methods=['POST'])
-def generate_poster_image():
-    """Generate a poster image using OpenAI's DALL-E model."""
-    try:
-        if 'access_token' not in session:
-            return jsonify({'error': 'Not authenticated'}), 401
-
-        data = request.get_json()
-        prompt = data.get('prompt', '')
-        
-        if not prompt:
-            # Create a default prompt if none provided
-            runs_2025 = _get_display_runs()
-            if not runs_2025:
-                return jsonify({'error': 'No run data available'}), 400
-                
-            # Basic stats for the prompt
-            total_distance = sum(run.get('distance', 0) for run in runs_2025) / 1000  # Convert to km
-            total_runs = len(runs_2025)
-            
-            prompt = f"Create an inspirational running poster for a Strava year in review. " \
-                    f"The runner completed {total_runs} runs covering {total_distance:.1f} km this year. " \
-                    f"The poster should have a modern, clean design with a motivational theme. " \
-                    f"Include elements that represent running, fitness, and achievement. " \
-                    f"Use a color scheme of blues and greens with white space for a clean look. " \
-                    f"The poster should be in a 4:3 aspect ratio."
-        
-        # Call OpenAI's DALL-E API
-        response = openai_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1,
-        )
-        
-        image_url = response.data[0].url
-        return jsonify({'image_url': image_url})
-        
-    except Exception as e:
-        logger.error(f"Error generating poster image: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
 
 def _get_display_runs():
