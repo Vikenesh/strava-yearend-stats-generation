@@ -10,8 +10,12 @@ import time
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, redirect, session, url_for
+from flask import Flask, request, redirect, session, url_for, jsonify
 import requests
+import tempfile
+import json
+import subprocess
+from threading import Thread
 
 # Application Configuration
 # ======================
@@ -679,6 +683,125 @@ def analyze():
     except Exception as e:
         logger.error(f"Error in analyze route: {str(e)}")
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
+
+@app.route('/dashboard')
+def get_stats_page():
+    """Generate the stats page with running statistics."""
+    if 'access_token' not in session:
+        return redirect(url_for('login'))
+        
+    # Add dashboard link to the navigation
+    dashboard_link = """
+    <div style="text-align: center; margin: 20px 0;">
+        <a href="/dashboard" class="btn btn-primary" style="background-color: #FF4500; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin: 10px;">
+            🚀 View Interactive Dashboard
+        </a>
+    </div>
+    """
+    
+    try:
+        # Get activities data
+        activities = get_all_activities()
+        if not activities:
+            return "No activities found. Please try again later."
+        
+        # Save activities to a temporary file for Streamlit to read
+        temp_dir = tempfile.gettempdir()
+        activities_file = os.path.join(temp_dir, 'activities.json')
+        
+        # Prepare activities data for JSON serialization
+        serializable_activities = []
+        for activity in activities:
+            # Convert datetime objects to strings
+            serialized = activity.copy()
+            if 'start_date' in serialized and hasattr(serialized['start_date'], 'isoformat'):
+                serialized['start_date'] = serialized['start_date'].isoformat()
+            if 'start_date_local' in serialized and hasattr(serialized['start_date_local'], 'isoformat'):
+                serialized['start_date_local'] = serialized['start_date_local'].isoformat()
+            serializable_activities.append(serialized)
+        
+        # Save to file
+        with open(activities_file, 'w') as f:
+            json.dump(serializable_activities, f)
+        
+        # Get the URL for the dashboard
+        dashboard_url = f"http://localhost:8501"  # Default Streamlit port
+        
+        # Start Streamlit in a separate thread
+        def run_streamlit():
+            cmd = [
+                'streamlit', 'run', 'dashboard.py',
+                '--server.port=8501',
+                '--server.address=0.0.0.0',
+                '--server.enableCORS=false',
+                '--server.enableXsrfProtection=false'
+            ]
+            subprocess.Popen(cmd)
+        
+        # Only start Streamlit if it's not already running
+        try:
+            response = requests.get('http://localhost:8501', timeout=1)
+            if response.status_code != 200:
+                thread = Thread(target=run_streamlit)
+                thread.daemon = True
+                thread.start()
+        except requests.exceptions.RequestException:
+            thread = Thread(target=run_streamlit)
+            thread.daemon = True
+            thread.start()
+        
+        # Add the HTML content to the response
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Loading Dashboard...</title>
+            {dashboard_link}
+            <meta http-equiv="refresh" content="2;url={dashboard_url}">
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: #f5f5f5;
+                }}
+                .loader {{
+                    text-align: center;
+                    padding: 20px;
+                    background: white;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                .spinner {{
+                    border: 5px solid #f3f3f3;
+                    border-top: 5px solid #3498db;
+                    border-radius: 50%;
+                    width: 50px;
+                    height: 50px;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto 20px;
+                }}
+                @keyframes spin {{
+                    0% {{ transform: rotate(0deg); }}
+                    100% {{ transform: rotate(360deg); }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="loader">
+                <div class="spinner"></div>
+                <h2>Loading Your Running Dashboard...</h2>
+                <p>If you're not redirected automatically, <a href="{dashboard_url}">click here</a>.</p>
+            </div>
+        </body>
+        </html>
+        """
+    except Exception as e:
+        logger.error(f"Error launching dashboard: {str(e)}", exc_info=True)
+        return f"Error launching dashboard: {str(e)}"
 
 def get_stats_page():
     logger.info("get_stats_page called")
