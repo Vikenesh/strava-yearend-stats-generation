@@ -725,9 +725,24 @@ def get_stats_page():
         with open(activities_file, 'w') as f:
             json.dump(serializable_activities, f)
         
-        # Get the URL for the dashboard - use the same host as the current request
-        port = int(os.environ.get('PORT', '8501'))
-        dashboard_url = f"{request.host_url.rstrip('/')}:{port}/"
+        # Get and validate the port
+        try:
+            port = int(os.environ.get('PORT', '8501'))
+            if not (0 < port <= 65535):
+                logger.warning(f"Port {port} is out of range. Using default 8501")
+                port = 8501
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid PORT value: {e}. Using default 8501")
+            port = 8501
+            
+        # Construct dashboard URL safely
+        try:
+            base_url = request.host_url.rstrip('/')
+            dashboard_url = f"{base_url}:{port}/"
+            logger.info(f"Dashboard URL: {dashboard_url}")
+        except Exception as e:
+            logger.error(f"Error constructing dashboard URL: {e}")
+            dashboard_url = f"http://localhost:{port}/"
         
         # Start Streamlit in a separate thread with full Python path
         def run_streamlit():
@@ -744,12 +759,17 @@ def get_stats_page():
                     logger.error("Please install streamlit using: pip install streamlit==1.28.0")
                     return
                 
-                # Build the command with integer port
-                port = int(os.environ.get("PORT", "8501"))
-                if not (0 < port <= 65535):
-                    logger.error(f"Invalid port number: {port}. Using default 8501")
+                # Build the command with validated port
+                try:
+                    port = int(os.environ.get("PORT", "8501"))
+                    if not (0 < port <= 65535):
+                        logger.warning(f"Port {port} is out of range. Using default 8501")
+                        port = 8501
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid PORT value: {e}. Using default 8501")
                     port = 8501
-                    
+                
+                logger.info(f"Starting Streamlit server on port {port}")
                 cmd = [
                     python_path, '-m', 'streamlit', 'run', 'dashboard.py',
                     f'--server.port={port}',
