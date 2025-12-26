@@ -726,7 +726,8 @@ def get_stats_page():
             json.dump(serializable_activities, f)
         
         # Get the URL for the dashboard - use the same host as the current request
-        dashboard_url = f"{request.host_url.rstrip('/')}:{os.environ.get('PORT', '8501')}/"
+        port = int(os.environ.get('PORT', '8501'))
+        dashboard_url = f"{request.host_url.rstrip('/')}:{port}/"
         
         # Start Streamlit in a separate thread with full Python path
         def run_streamlit():
@@ -743,8 +744,12 @@ def get_stats_page():
                     logger.error("Please install streamlit using: pip install streamlit==1.28.0")
                     return
                 
-                # Build the command
-                port = os.environ.get("PORT", "8501")
+                # Build the command with integer port
+                port = int(os.environ.get("PORT", "8501"))
+                if not (0 < port <= 65535):
+                    logger.error(f"Invalid port number: {port}. Using default 8501")
+                    port = 8501
+                    
                 cmd = [
                     python_path, '-m', 'streamlit', 'run', 'dashboard.py',
                     f'--server.port={port}',
