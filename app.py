@@ -1473,45 +1473,19 @@ def generate_poster():
         return jsonify({'error': 'Not authenticated'}), 401
         
     try:
-        # Get runs from session if available
         current_year = datetime.now().year
-        runs = None
         
-        # Try to get runs from session first
-        if 'runs_2025' in session:
-            try:
-                runs = json.loads(session['runs_2025'])
-                logger.info(f"Using {len(runs)} runs from {current_year} from session")
-            except Exception as e:
-                logger.warning(f"Error loading runs from session: {e}")
+        # Always fetch fresh activities from Strava API for poster generation
+        logger.info("Fetching fresh activities from Strava API for poster generation")
+        activities = get_all_activities()
+        if not activities:
+            return jsonify({'error': 'No activities found'}), 404
         
-        # If not in session, try to get from activities
-        if not runs and 'activities' in session:
-            try:
-                activities = json.loads(session['activities'])
-                runs = [clean_activity_data(a) for a in activities 
-                       if a.get('type') == 'Run' and 
-                       str(current_year) in a.get('start_date', '')]
-                runs = [r for r in runs if r is not None]
-                logger.info(f"Generated {len(runs)} runs from activities in session")
-            except Exception as e:
-                logger.warning(f"Error processing activities from session: {e}")
-        
-        # If still no runs, fetch from API
-        if not runs:
-            logger.info("No runs in session, fetching from API")
-            activities = get_all_activities()
-            if not activities:
-                return jsonify({'error': 'No activities found'}), 404
-            
-            runs = [clean_activity_data(a) for a in activities 
-                   if a.get('type') == 'Run' and 
-                   str(current_year) in a.get('start_date', '')]
-            runs = [r for r in runs if r is not None]
-            
-            # Store in session for future use
-            session['runs_2025'] = json.dumps(runs)
-            logger.info(f"Stored {len(runs)} runs from {current_year} in session")
+        # Process and filter runs for current year
+        runs = [clean_activity_data(a) for a in activities 
+               if a.get('type') == 'Run' and 
+               str(current_year) in a.get('start_date', '')]
+        runs = [r for r in runs if r is not None]
         
         if not runs:
             return jsonify({'error': f'No runs found for {current_year}'}), 404
