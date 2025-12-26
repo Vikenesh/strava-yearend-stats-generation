@@ -65,14 +65,6 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
 TOKEN_REFRESH_BUFFER = 300  # 5 minutes buffer for token refresh
 TOKEN_EXPIRY_BUFFER = 300  # 5 minutes buffer for token expiry
 ACTIVITIES_PER_PAGE = 200  # Max activities per page from Strava API
-# KUDOS cache settings
-KUDOS_CACHE_TTL = int(os.environ.get('KUDOS_CACHE_TTL', 600))  # seconds
-KUDOS_RATE_LIMIT_DELAY = float(os.environ.get('KUDOS_RATE_LIMIT_DELAY', 0.1))  # seconds between requests
-
-# Simple in-memory cache for kudos: { activity_id: (timestamp, data_list) }
-_KUDOS_CACHE = {}
-# Rate limiting tracker
-_LAST_KUDOS_REQUEST_TIME = 0
 
 def utc_to_ist(utc_datetime_str):
     """Convert UTC datetime string to Indian Standard Time (IST) timezone.
@@ -756,8 +748,6 @@ def analyze():
 def get_stats_page():
     logger.info("get_stats_page called")
     try:
-        # initialize kudos_html early so later formatting cannot fail
-        kudos_html = ''
         # Get token from session
         if 'access_token' not in session:
             logger.warning("No access token in session, redirecting to login")
@@ -852,9 +842,6 @@ def get_stats_page():
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
         display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
 
-        # Placeholder kudos section — client will fetch top-3 asynchronously
-        kudos_html = '<div id="kudos-section"><p><strong>Top 3 Kudos Givers:</strong> <span id="kudos-loading">Good things come for those who wait!! Loading top kudos...</span></p></div>'
-        
         # Pre-generate CSV data for JavaScript
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
         for run in runs_2025[:max_runs]:
@@ -1148,7 +1135,6 @@ def get_stats_page():
                             <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
                             <p><strong>Other Activities:</strong> {other_activities_count}</p>
                             {display_info}
-                            {kudos_html}
                         </div>
                     </div>
                     <div>
@@ -1162,9 +1148,6 @@ def get_stats_page():
                     <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
                     <button class="copy-btn" onclick="window.open('/poster', '_blank')">Open Poster</button>
-                    <button class="copy-btn" onclick="startDownload('csv')" style="display:inline-block; text-align:center;">Download CSV</button>
-                    <button class="copy-btn" onclick="startDownload('excel')" style="display:inline-block; text-align:center;">Download Excel</button>
-                    <button class="copy-btn" onclick="startDownload('pdf')" style="display:inline-block; text-align:center;">Download PDF</button>
                 </div>
                 
                 <div class="table-container">
@@ -1183,14 +1166,6 @@ def get_stats_page():
                 </div>
                 </div>
 
-            <div id="downloadOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
-                <div style="text-align:center; color:white; display:flex; align-items:center; justify-content:center; height:100%;">
-                    <div style="display:flex; flex-direction:column; align-items:center;">
-                        <div class="spinner" style="width:48px; height:48px; border-width:4px; border-top-color:#fff;"></div>
-                        <div style="margin-top:10px; font-size:1.1rem;">Preparing download...</div>
-                    </div>
-                </div>
-            </div>
 
             <script>
                 // Add interactive features
@@ -1218,12 +1193,6 @@ def get_stats_page():
                             this.style.transform = 'translateY(0) scale(1)';
                         }});
                     }});
-                    // Fetch top kudos after initial page paint
-                    try {{
-                        if (typeof fetchTopKudos === 'function') fetchTopKudos();
-                    }} catch (e) {{
-                        console.warn('fetchTopKudos error', e);
-                    }}
                 }});
                 
                 function copyTableData() {{
@@ -1328,74 +1297,7 @@ ${{csvData}}`;
                     }});
                 }}
 
-                async function startDownload(fmt) {{
-                    const overlay = document.getElementById('downloadOverlay');
-                    if (overlay) {{
-                        overlay.style.display = 'flex';
-                    }}
 
-                    try {{
-                        const resp = await fetch('/download/activities?format=' + encodeURIComponent(fmt), {{ credentials: 'same-origin' }});
-                        if (!resp.ok) {{
-                            throw new Error(`Download failed: ${{resp.status}} ${{resp.statusText}}`);
-                        }}
-
-                        const blob = await resp.blob();
-                        // determine filename from Content-Disposition header if present
-                        let filename = 'activities_2025.' + (fmt === 'excel' ? 'xlsx' : (fmt === 'pdf' ? 'pdf' : 'csv'));
-                        const cd = resp.headers.get('Content-Disposition');
-                        if (cd) {{
-                            const m = cd.match(/filename\*=UTF-8''(.+)|filename="?([^";]+)"?/);
-                            if (m) {{
-                                filename = decodeURIComponent(m[1] || m[2]);
-                            }}
-                        }}
-
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-
-                    }} catch (err) {{
-                        console.error('Download error', err);
-                        alert('Download failed: ' + (err.message || err));
-                    }} finally {{
-                        // hide overlay even on error
-                        if (overlay) overlay.style.display = 'none';
-                    }}
-                }}
-
-                function fetchTopKudos() {{
-                    const section = document.getElementById('kudos-section');
-                    if (!section) return;
-                    const loading = document.getElementById('kudos-loading');
-                    if (loading) loading.innerText = 'Loading top kudos...';
-
-                    fetch('/kudos/top-giver?limit=3')
-                        .then(resp => resp.json())
-                        .then(data => {{
-                            if (!data || !data.top_givers) {{
-                                if (loading) loading.innerText = 'No kudos available.';
-                                return;
-                            }}
-                            const top = data.top_givers;
-                            let html = '<p><strong>Top 3 Kudos Givers:</strong></p><ol>';
-                            top.forEach(g => {{
-                                const name = ((g.firstname || '') + ' ' + (g.lastname || '')).trim() || (g.name || 'Anonymous');
-                                html += `<li>${{name}} — ${{g.count}} kudos</li>`;
-                            }});
-                            html += '</ol>';
-                            section.innerHTML = html;
-                        }})
-                        .catch(err => {{
-                            console.warn('Error fetching top kudos', err);
-                            if (loading) loading.innerText = 'Could not load top kudos.';
-                        }});
-                }}
             </script>
         </body>
         </html>
@@ -1405,7 +1307,6 @@ ${{csvData}}`;
             runs_2025_count=runs_2025_count,
             other_activities_count=other_activities_count,
             display_info=display_info,
-            kudos_html=kudos_html,
             csv_data=csv_data,
             activities=activities,
             runs_2025=runs_2025,
@@ -1512,30 +1413,6 @@ def poster():
 
 
 
-def _get_display_runs():
-    """Return runs used for display/download: prefer session-stored runs_2025_json else fetch and filter."""
-    runs_json = session.get('runs_2025_json')
-    if runs_json:
-        try:
-            runs = json.loads(runs_json)
-            return runs
-        except Exception:
-            pass
-
-    activities = get_all_activities()
-    if activities is None:
-        return None
-
-    runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
-    return runs_2025
-
-
-@app.route('/download/activities')
-def download_activities():
-    """Endpoint for downloading activities (currently disabled)."""
-    logger.warning("Download functionality has been disabled")
-    return jsonify({'error': 'Download functionality has been disabled. Please use the web interface.'}), 410  # 410 Gone
-
 
 @app.route('/generate-poster', methods=['POST'])
 def generate_poster():
@@ -1543,213 +1420,6 @@ def generate_poster():
     logger.warning("Poster generation functionality has been disabled")
     return jsonify({'error': 'Poster generation functionality has been disabled.'}), 410  # 410 Gone
 
-
-def get_activity_kudos(activity_id, per_page=200, force_refresh=False):
-    """Fetch kudos (athlete objects) for a given activity id with pagination.
-
-    per_page: number of items per page to request from Strava (max 200)
-    force_refresh: bypass cache and fetch fresh data
-    """
-    logger.info(f"Fetching kudos for activity {activity_id} (per_page={per_page})")
-
-    # Check cache first
-    if not force_refresh:
-        try:
-            cached = _KUDOS_CACHE.get(activity_id)
-            if cached:
-                ts, data = cached
-                if (time.time() - ts) < KUDOS_CACHE_TTL:
-                    logger.debug(f"Kudos cache hit for {activity_id}")
-                    return data
-                else:
-                    # expired
-                    _KUDOS_CACHE.pop(activity_id, None)
-        except Exception:
-            # if cache fails, continue to fetch
-            pass
-
-    # Rate limiting between kudos requests
-    global _LAST_KUDOS_REQUEST_TIME
-    current_time = time.time()
-    time_since_last = current_time - _LAST_KUDOS_REQUEST_TIME
-    if time_since_last < KUDOS_RATE_LIMIT_DELAY:
-        sleep_time = KUDOS_RATE_LIMIT_DELAY - time_since_last
-        logger.debug(f"Rate limiting kudos request: sleeping {sleep_time:.2f}s")
-        time.sleep(sleep_time)
-    _LAST_KUDOS_REQUEST_TIME = time.time()
-
-    token = get_valid_access_token()
-    if not token:
-        logger.error("No valid access token available for fetching kudos")
-        return None
-
-    # sanitize per_page
-    try:
-        per_page = int(per_page)
-    except Exception:
-        per_page = 200
-    if per_page <= 0:
-        per_page = 200
-    if per_page > 200:
-        per_page = 200
-
-    headers = {'Authorization': f'Bearer {token}'}
-    all_kudos = []
-    page = 1
-
-    while True:
-        url = f'https://www.strava.com/api/v3/activities/{activity_id}/kudos?page={page}&per_page={per_page}'
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error fetching kudos for {activity_id}: {e}")
-            return None
-
-        # Try token refresh on auth error
-        if response.status_code in (401, 403):
-            logger.warning(f"Auth error ({response.status_code}) fetching kudos, attempting token refresh")
-            if refresh_access_token():
-                headers = {'Authorization': f"Bearer {session.get('access_token') }"}
-                response = requests.get(url, headers=headers, timeout=10)
-            else:
-                logger.error("Token refresh failed while fetching kudos")
-                return None
-
-        if response.status_code != 200:
-            logger.error(f"Failed to fetch kudos for {activity_id}: {response.status_code} - {response.text}")
-            return None
-
-        try:
-            data = response.json()
-        except Exception as e:
-            logger.error(f"Error parsing kudos JSON for {activity_id}: {e}")
-            return None
-
-        if not data:
-            break
-
-        all_kudos.extend(data)
-        page += 1
-        if page > 10:
-            logger.warning("Kudos pagination safety limit reached")
-            break
-
-    logger.info(f"Fetched {len(all_kudos)} kudos for activity {activity_id}")
-
-    # store in cache
-    try:
-        _KUDOS_CACHE[activity_id] = (time.time(), all_kudos)
-    except Exception:
-        pass
-
-    return all_kudos
-
-
-@app.route('/activities/<int:activity_id>/kudos')
-def activity_kudos_route(activity_id):
-    """Return list of kudos for a single activity as JSON."""
-    logger.info(f"Route /activities/{activity_id}/kudos called")
-    if 'access_token' not in session:
-        logger.warning("No access token in session, redirecting to login")
-        return redirect('/login')
-
-    # allow client to request smaller/larger per_page (capped at 200)
-    per_page = request.args.get('per_page', None)
-    kudos = get_activity_kudos(activity_id, per_page=per_page)
-    if kudos is None:
-        return jsonify({'error': 'Failed to fetch kudos for activity', 'activity_id': activity_id}), 500
-
-    return jsonify({'activity_id': activity_id, 'kudos_count': len(kudos), 'kudos': kudos})
-
-
-@app.route('/kudos/top-giver')
-def top_kudos_giver():
-    """Aggregate kudos across all activities for the logged-in athlete and return the top giver.
-    
-    Optimized for API limits:
-    - Only fetches kudos for recent activities (last 50)
-    - Uses cached data when available
-    - Implements rate limiting between requests
-    """
-    logger.info("Route /kudos/top-giver called")
-    if 'access_token' not in session:
-        logger.warning("No access token in session, redirecting to login")
-        return redirect('/login')
-
-    activities = get_all_activities()
-    if activities is None:
-        logger.error("Failed to fetch activities while computing top giver")
-        return redirect('/login')
-
-    # Optimization: Only process recent activities to reduce API calls
-    recent_activities = activities[:50]  # Limit to 50 most recent activities
-    logger.info(f"Processing kudos for {len(recent_activities)} recent activities (out of {len(activities)} total)")
-
-    giver_counts = defaultdict(int)
-    giver_info = {}
-    api_calls_made = 0
-    cache_hits = 0
-
-    for act in recent_activities:
-        aid = act.get('id')
-        if not aid:
-            continue
-            
-        # Check cache first
-        cached = _KUDOS_CACHE.get(aid)
-        if cached:
-            ts, data = cached
-            if (time.time() - ts) < KUDOS_CACHE_TTL:
-                kudos = data
-                cache_hits += 1
-                logger.debug(f"Using cached kudos for activity {aid}")
-            else:
-                kudos = get_activity_kudos(aid)
-                api_calls_made += 1
-        else:
-            kudos = get_activity_kudos(aid)
-            api_calls_made += 1
-            
-        if not kudos:
-            continue
-            
-        for person in kudos:
-            pid = person.get('id')
-            if not pid:
-                continue
-            giver_counts[pid] += 1
-            # store latest info
-            giver_info[pid] = {
-                'id': pid,
-                'firstname': person.get('firstname'),
-                'lastname': person.get('lastname'),
-                'profile': person.get('profile')
-            }
-
-    logger.info(f"Kudos aggregation complete: {api_calls_made} API calls, {cache_hits} cache hits")
-
-    if not giver_counts:
-        return jsonify({'message': 'No kudos found across activities', 'top_giver': None, 'leaderboard': []})
-
-    # Build leaderboard
-    leaderboard = sorted([
-        {'id': pid, 'count': cnt, **giver_info.get(pid, {})} for pid, cnt in giver_counts.items()
-    ], key=lambda x: x['count'], reverse=True)
-
-    # Allow client to request top-N (default 3)
-    try:
-        limit = int(request.args.get('limit', 3))
-    except Exception:
-        limit = 3
-    if limit <= 0:
-        limit = 3
-    if limit > 50:
-        limit = 50
-
-    top_n = leaderboard[:limit]
-    top = top_n[0] if top_n else None
-
-    return jsonify({'top_givers': top_n, 'top_giver': top, 'leaderboard_count': len(leaderboard)})
 
 if __name__ == '__main__':
     logger.info("Starting Flask app...")
