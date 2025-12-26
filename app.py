@@ -68,7 +68,7 @@ CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
 REDIRECT_URI = os.environ.get('REDIRECT_URI', 'https://strava-year-end-summary-production.up.railway.app/callback')
 
 # xAI Grok API configuration
-XAI_API_KEY = os.environ.get('XAI_API_KEY')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 XAI_API_URL = "https://api.x.ai/v1/chat/completions"
 
 # Warn on startup if credentials are missing
@@ -77,10 +77,10 @@ if not CLIENT_ID or not CLIENT_SECRET:
 else:
     logger.info('STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET found in environment')
 
-if not XAI_API_KEY:
-    logger.warning('XAI_API_KEY not set. AI poster generation will not work.')
+if not OPENAI_API_KEY:
+    logger.warning('OPENAI_API_KEY not set. AI poster generation will not work.')
 else:
-    logger.info('XAI_API_KEY present: True')
+    logger.info('OPENAI_API_KEY present: True')
 
 # Helper Functions
 # ===============
@@ -358,58 +358,46 @@ def generate_grok_poster_route():
         return jsonify({'error': 'Internal server error'}), 500
 
 def generate_grok_poster(activities, athlete_name):
-    """Generate a poster using xAI Grok model with running stats."""
-    if not XAI_API_KEY:
-        logger.error("XAI_API_KEY not configured")
-        return None
+    """Generate a poster using OpenAI's DALL-E 3 model with running stats."""
+    if not OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not configured, using mock response")
+        return get_mock_poster(activities, athlete_name)
     
     try:
         # Prepare the prompt with activity data
         prompt = f"""
-        Create an HTML+CSS poster for a runner's year in review with the following details:
+        Create a beautiful, inspiring poster for a runner's year in review with the following details:
         
         - Athlete: {athlete_name}
         - Total Runs: {len(activities)}
         - Total Distance: {sum(a.get('m', 0) / 1000 for a in activities):.1f} km
         - Total Time: {sum(a.get('e', 0) / 3600 for a in activities):.1f} hours
         
-        The poster should be visually appealing and include:
+        The poster should be visually stunning and include:
         1. A creative title
         2. Key statistics
         3. A motivational message
-        4. A clean, modern design
-        
-        Return only the HTML+CSS, no markdown or code block formatting.
+        4. A beautiful running-related background
+        5. A clean, modern design
         """
         
-        # Use the recommended endpoint for stateful conversations
-        api_url = "https://api.x.ai"
         headers = {
-            "Authorization": f"Bearer {XAI_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-        # Initial message to start the conversation
+        # For DALL-E 3
         payload = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that creates beautiful HTML+CSS posters for runners."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "model": "grok-1",
-            "temperature": 0.7,
-            "max_tokens": 2000
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": "1024x1024",
+            "quality": "standard"
         }
         
-        logger.info("Sending request to xAI Grok API...")
+        logger.info("Sending request to OpenAI DALL-E API...")
         response = requests.post(
-            f"{api_url}/v1/chat/completions",
+            "https://api.openai.com/v1/images/generations",
             headers=headers,
             json=payload
         )
@@ -419,31 +407,79 @@ def generate_grok_poster(activities, athlete_name):
         
         if response.status_code != 200:
             logger.error(f"API Error: {response.status_code} - {response.text}")
-            return None
+            logger.warning("Falling back to mock response")
+            return get_mock_poster(activities, athlete_name)
             
         result = response.json()
         
-        # Extract the generated content
-        if 'choices' in result and len(result['choices']) > 0:
-            poster_html = result['choices'][0]['message']['content']
-            
-            # Clean up the response if it's wrapped in markdown code blocks
-            if '```html' in poster_html:
-                poster_html = poster_html.split('```html')[1].split('```')[0].strip()
-            elif '```' in poster_html:
-                poster_html = poster_html.split('```')[1].strip()
-            
-            return poster_html
-        else:
-            logger.error(f"Unexpected API response format: {result}")
-            return None
+        # Extract the image URL
+        if 'data' in result and len(result['data']) > 0:
+            image_url = result['data'][0].get('url')
+            if image_url:
+                # Create an HTML page that displays the generated image
+                return f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>{athlete_name}'s Year in Running</title>
+                    <style>
+                        body {{
+                            margin: 0;
+                            padding: 0;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            min-height: 100vh;
+                            background-color: #f5f5f5;
+                        }}
+                        .poster-container {{
+                            max-width: 100%;
+                            text-align: center;
+                        }}
+                        .poster-image {{
+                            max-width: 100%;
+                            height: auto;
+                            border-radius: 10px;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        }}
+                        .download-btn {{
+                            margin-top: 20px;
+                            padding: 10px 20px;
+                            background-color: #4CAF50;
+                            color: white;
+                            border: none;
+                            border-radius: 5px;
+                            cursor: pointer;
+                            font-size: 16px;
+                            text-decoration: none;
+                            display: inline-block;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="poster-container">
+                        <img src="{image_url}" alt="Running Poster" class="poster-image">
+                        <div>
+                            <a href="{image_url}" download="running-poster.png" class="download-btn">
+                                Download Poster
+                            </a>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+        
+        logger.warning("Unexpected API response format, using mock response")
+        return get_mock_poster(activities, athlete_name)
             
     except requests.exceptions.RequestException as e:
         logger.error(f"Request failed: {str(e)}")
+        logger.warning("Falling back to mock response")
+        return get_mock_poster(activities, athlete_name)
     except Exception as e:
         logger.error(f"Error generating poster: {str(e)}", exc_info=True)
-    
-    return None
+        logger.warning("Falling back to mock response")
+        return get_mock_poster(activities, athlete_name)
 
 @app.route('/logout')
 def logout():
