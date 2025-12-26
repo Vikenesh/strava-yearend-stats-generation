@@ -16,7 +16,20 @@ import tempfile
 import subprocess
 import sys
 import os
+import socket
 from threading import Thread
+
+def find_available_port(start_port=8501, max_attempts=10):
+    """Find an available port starting from start_port"""
+    port = start_port
+    for _ in range(max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', port))
+                return port
+        except OSError:
+            port += 1
+    return start_port  # Fallback to start_port if no port is available
 
 # Application Configuration
 # ======================
@@ -727,22 +740,31 @@ def get_stats_page():
         
         # Get and validate the port
         try:
-            port = int(os.environ.get('PORT', '8501'))
+            port = int(os.environ.get('PORT', '0'))
             if not (0 < port <= 65535):
-                logger.warning(f"Port {port} is out of range. Using default 8501")
-                port = 8501
+                port = find_available_port(8501)
+                logger.info(f"Using dynamically found available port: {port}")
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid PORT value: {e}. Using default 8501")
-            port = 8501
+            port = find_available_port(8501)
+            logger.info(f"Using dynamically found available port: {port}")
+            
+        # Store the port in the session so we can use it in the dashboard route
+        session['dashboard_port'] = port
             
         # Construct dashboard URL safely
         try:
-            base_url = request.host_url.rstrip('/')
-            dashboard_url = f"{base_url}:{port}/"
+            # For Railway, we need to use the provided host URL without appending the port
+            # as Railway handles the routing internally
+            if 'RAILWAY_STATIC_URL' in os.environ:
+                dashboard_url = f"{os.environ['RAILWAY_STATIC_URL']}/dashboard"
+            else:
+                base_url = request.host_url.rstrip('/')
+                dashboard_url = f"{base_url}/dashboard"
+                
             logger.info(f"Dashboard URL: {dashboard_url}")
         except Exception as e:
             logger.error(f"Error constructing dashboard URL: {e}")
-            dashboard_url = f"http://localhost:{port}/"
+            dashboard_url = f"http://localhost:{port}/dashboard"
         
         # Start Streamlit in a separate thread with full Python path
         def run_streamlit():
@@ -759,15 +781,9 @@ def get_stats_page():
                     logger.error("Please install streamlit using: pip install streamlit==1.28.0")
                     return
                 
-                # Build the command with validated port
-                try:
-                    port = int(os.environ.get("PORT", "8501"))
-                    if not (0 < port <= 65535):
-                        logger.warning(f"Port {port} is out of range. Using default 8501")
-                        port = 8501
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid PORT value: {e}. Using default 8501")
-                    port = 8501
+                # Use the port we found earlier
+                port = session.get('dashboard_port', 8501)
+                logger.info(f"Starting Streamlit with port: {port}")
                 
                 logger.info(f"Starting Streamlit server on port {port}")
                 cmd = [
