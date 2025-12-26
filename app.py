@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
 import requests
-from groq import Groq
+import requests
 
 try:
     import pandas as pd
@@ -69,8 +69,9 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-202
 CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID')
 CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
 
-# Groq API configuration
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+# xAI Grok API configuration
+XAI_API_KEY = os.environ.get('XAI_API_KEY')
+XAI_API_URL = "https://api.x.ai/v1/chat/completions"
 
 # Warn on startup if credentials are missing
 if not CLIENT_ID or not CLIENT_SECRET:
@@ -79,7 +80,7 @@ else:
     logger.info('STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET found in environment')
 
 # Log presence of other important vars (don't log secret values)
-logger.info(f"GROQ_API_KEY present: {bool(GROQ_API_KEY)}")
+logger.info(f"XAI_API_KEY present: {bool(XAI_API_KEY)}")
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 
@@ -1404,17 +1405,14 @@ ${{csvData}}`;
 
 
 def generate_grok_poster(activities, athlete_name):
-    """Generate a poster using Grok model with running stats."""
-    logger.info(f"Generating poster with Grok for {athlete_name} with {len(activities)} activities")
+    """Generate a poster using xAI Grok model with running stats."""
+    logger.info(f"Generating poster with xAI Grok for {athlete_name} with {len(activities)} activities")
     
-    if not GROQ_API_KEY:
-        logger.error("GROQ_API_KEY not set")
+    if not XAI_API_KEY:
+        logger.error("XAI_API_KEY not set")
         return None
 
     try:
-        # Initialize Groq client
-        client = Groq(api_key=GROQ_API_KEY)
-        
         # Prepare activity summary
         total_distance = sum(act.get('distance', 0) for act in activities) / 1000  # Convert to km
         total_time = sum(act.get('elapsed_time', 0) for act in activities) / 3600  # Convert to hours
@@ -1430,7 +1428,7 @@ def generate_grok_poster(activities, athlete_name):
             except (KeyError, ValueError):
                 continue
         
-        # Format prompt for Grok
+        # Format prompt for xAI Grok
         prompt = f"""
         Create a motivational running poster for {athlete_name} for {datetime.now().year} with the following stats:
         - Total Runs: {len(activities)}
@@ -1449,19 +1447,44 @@ def generate_grok_poster(activities, athlete_name):
         Return the poster as an HTML+CSS design that can be rendered in a web browser.
         """
         
-        # Call Grok API
-        response = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
-            messages=[
-                {"role": "system", "content": "You are a creative designer who creates beautiful, responsive HTML+CSS posters for runners."},
-                {"role": "user", "content": prompt}
+        # Prepare headers and payload for xAI Grok API
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {XAI_API_KEY}",
+            "Accept": "application/json"
+        }
+        
+        payload = {
+            "model": "grok-4-latest",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a creative designer who creates beautiful, responsive HTML+CSS posters for runners."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
             ],
-            temperature=0.7,
-            max_tokens=4000
+            "temperature": 0.7,
+            "max_tokens": 4000,
+            "stream": False
+        }
+        
+        # Call xAI Grok API
+        response = requests.post(
+            XAI_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=60  # 60 seconds timeout
         )
         
-        # Extract the generated content
-        poster_html = response.choices[0].message.content
+        if response.status_code != 200:
+            logger.error(f"xAI API error: {response.status_code} - {response.text}")
+            return None
+            
+        response_data = response.json()
+        poster_html = response_data['choices'][0]['message']['content']
         
         # Clean up the response to ensure it's valid HTML
         if '```html' in poster_html:
@@ -1472,12 +1495,12 @@ def generate_grok_poster(activities, athlete_name):
         return poster_html
         
     except Exception as e:
-        logger.error(f"Error generating Grok poster: {str(e)}")
+        logger.error(f"Error generating xAI Grok poster: {str(e)}")
         return None
 
 @app.route('/generate-grok-poster', methods=['POST'])
 def generate_grok_poster_route():
-    """API endpoint to generate a poster using Grok model."""
+    """API endpoint to generate a poster using xAI Grok model."""
     if 'access_token' not in session:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -1485,6 +1508,11 @@ def generate_grok_poster_route():
         current_year = datetime.now().year
         athlete = session.get('athlete_info', {})
         athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
+        
+        # Check if xAI API key is configured
+        if not XAI_API_KEY:
+            logger.error("XAI_API_KEY not configured")
+            return jsonify({'error': 'xAI API key not configured'}), 500
         
         # Fetch fresh activities
         activities = get_all_activities()
@@ -1502,24 +1530,35 @@ def generate_grok_poster_route():
         if not runs:
             return jsonify({'error': f'No runs found for {current_year}'}), 404
         
-        # Generate poster
+        # Generate poster using xAI Grok
+        logger.info(f"Generating poster for {athlete_name} with {len(runs)} runs")
         poster_html = generate_grok_poster(runs, athlete_name)
+        
         if not poster_html:
+            logger.error("Failed to generate poster: Empty response from xAI Grok")
             return jsonify({'error': 'Failed to generate poster'}), 500
+        
+        # Calculate stats for the response
+        total_distance = round(sum(r.get('distance', 0) / 1000 for r in runs), 1)
+        total_time = round(sum(r.get('elapsed_time', 0) for r in runs) / 3600, 1)
         
         return jsonify({
             'success': True,
             'poster_html': poster_html,
             'stats': {
+                'athlete_name': athlete_name,
                 'total_runs': len(runs),
-                'total_distance_km': round(sum(r.get('distance', 0) / 1000 for r in runs), 1),
-                'total_time_hours': round(sum(r.get('elapsed_time', 0) for r in runs) / 3600, 1),
+                'total_distance_km': total_distance,
+                'total_time_hours': total_time,
                 'year': current_year
             }
         })
         
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error in generate_grok_poster_route: {str(e)}")
+        return jsonify({'error': 'Failed to connect to xAI API'}), 503
     except Exception as e:
-        logger.error(f"Error in generate_grok_poster_route: {str(e)}")
+        logger.error(f"Error in generate_grok_poster_route: {str(e)}", exc_info=True)
         return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
