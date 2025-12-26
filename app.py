@@ -1071,8 +1071,6 @@ def get_stats_page():
                 </div>
                 
                 <div class="button-container">
-                    <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
-                    <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
                     <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
                 </div>
                 
@@ -1119,87 +1117,6 @@ def get_stats_page():
                         }});
                     }});
                 }});
-                
-                function copyTableData() {{
-                    const table = document.getElementById('activityTable');
-                    const rows = table.getElementsByTagName('tr');
-                    let data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n';
-                    
-                    for (let i = 1; i < rows.length; i++) {{
-                        const cells = rows[i].getElementsByTagName('td');
-                        const rowData = [];
-                        for (let j = 0; j < cells.length; j++) {{
-                            rowData.push(cells[j].innerText);
-                        }}
-                        data += rowData.join(',') + '\\n';
-                    }}
-                    
-                    navigator.clipboard.writeText(data).then(function() {{
-                        alert('2025 running data copied to clipboard! You can now paste this into ChatGPT for poster generation.');
-                    }});
-                }}
-                
-                function copyWithPrompts() {{
-                    const csvData = `{csv_data}`;
-                    
-                    const prompts = `
-                    
-=== CHATGPT PROMPTS FOR STRAVA DATA ANALYSIS ===
-
-PROMPT 1: Basic Analysis
-"Analyze this running data and provide insights on:
-1. Performance trends and improvements
-2. Training consistency patterns  
-3. Goal achievement status
-4. Recommendations for future training
-
-Data:
-${{csvData}}"
-
-PROMPT 2: Visual Poster Creation
-"Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
-- Total distance and time statistics
-- Monthly breakdowns with progress indicators
-- Fastest/longest run highlights
-- Consistency streaks and patterns
-- Fun personality insights (early bird vs night owl)
-- Motivational summary
-
-Use emojis, creative formatting, and make it shareable!
-
-Data:
-${{csvData}}"
-
-PROMPT 3: Detailed Coaching Analysis
-"Act as a professional running coach and analyze this data comprehensively:
-1. Pace analysis and efficiency trends
-2. Weekly/monthly volume patterns
-3. Recovery and injury risk assessment
-4. Specific workout recommendations
-5. Long-term development plan
-
-Provide actionable advice with specific metrics.
-
-Data:
-${{csvData}}"
-
-PROMPT 4: Social Media Summary
-"Create engaging social media captions for different platforms about this running journey:
-- Instagram post with stats and achievements
-- Twitter summary with key highlights
-- Facebook story about progress
-- LinkedIn professional development angle
-
-Make it inspiring and shareable!
-
-Data:
-${{csvData}}"
-`;
-                    
-                    navigator.clipboard.writeText(prompts.trim()).then(function() {{
-                        alert('Data and analysis prompts copied! You now have 4 ready-to-use prompts for ChatGPT along with your running data.');
-                    }});
-                }}
                 
                 function copyPosterPrompt() {{
                     const csvData = `{csv_data}`;
