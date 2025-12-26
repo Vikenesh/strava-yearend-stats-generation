@@ -724,14 +724,14 @@ def get_stats_page():
         with open(activities_file, 'w') as f:
             json.dump(serializable_activities, f)
         
-        # Get the URL for the dashboard
-        dashboard_url = f"http://localhost:8501"  # Default Streamlit port
+        # Get the URL for the dashboard - use the same host as the current request
+        dashboard_url = f"{request.host_url.rstrip('/')}:{os.environ.get('PORT', '8501')}/"
         
         # Start Streamlit in a separate thread
         def run_streamlit():
             cmd = [
                 'streamlit', 'run', 'dashboard.py',
-                '--server.port=8501',
+                f'--server.port={os.environ.get("PORT", "8501")}',
                 '--server.address=0.0.0.0',
                 '--server.enableCORS=false',
                 '--server.enableXsrfProtection=false'

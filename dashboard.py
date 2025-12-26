@@ -6,6 +6,9 @@ import os
 import json
 from collections import defaultdict
 
+# Get port from environment variable or use default
+port = int(os.environ.get("PORT", 8501))
+
 # Set page config
 st.set_page_config(
     page_title="🏃‍♂️ Year in Running",
@@ -195,4 +198,21 @@ def main():
     st.markdown("Take a screenshot to share your stats on social media!")
 
 if __name__ == "__main__":
+    import streamlit.web.cli as stcli
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--server.port":
+        port = int(sys.argv[2])
+    
+    # Set the Streamlit configuration
+    st.set_page_config(
+        page_title="🏃‍♂️ Year in Running",
+        page_icon="🏃‍♂️",
+        layout="wide"
+    )
+    
+    # Run the main function
     main()
+    
+    # This is needed for Railway deployment
+    st._main_run_clExplicit()
