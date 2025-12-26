@@ -37,6 +37,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def clean_activity_data(activity):
+    """Extract and clean only the necessary fields from an activity."""
+    if not isinstance(activity, dict):
+        return None
+        
+    return {
+        'id': activity.get('id'),
+        'type': activity.get('type'),
+        'start_date': activity.get('start_date', ''),
+        'distance': float(activity.get('distance', 0)),
+        'moving_time': int(activity.get('moving_time', 0)),
+        'elapsed_time': int(activity.get('elapsed_time', 0)),
+        'average_speed': float(activity.get('average_speed', 0)),
+        'name': str(activity.get('name', '')),
+        'max_speed': float(activity.get('max_speed', 0)),
+        'total_elevation_gain': float(activity.get('total_elevation_gain', 0))
+    }
+
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
@@ -762,24 +780,31 @@ def get_stats_page():
         
         # Check if we should force refresh the activities
         force_refresh = request.args.get('force_refresh', '').lower() == 'true'
+        current_year = datetime.now().year
         
-        # Get activities data from session or fetch if not available
-        activities = None
-        if not force_refresh and 'activities' in session:
+        # Check if we have current year's runs in session
+        runs_2025 = None
+        if not force_refresh and 'runs_2025' in session:
             try:
-                activities = json.loads(session['activities'])
-                logger.info(f"Using {len(activities)} activities from session")
+                runs_2025 = json.loads(session['runs_2025'])
+                logger.info(f"Using {len(runs_2025)} runs from {current_year} from session")
             except Exception as e:
-                logger.warning(f"Error loading activities from session: {e}")
+                logger.warning(f"Error loading runs from session: {e}")
         
         # If not in session or force refresh, fetch from Strava
-        if not activities or force_refresh:
-            logger.info("Fetching activities from Strava API")
+        if not runs_2025 or force_refresh:
+            logger.info(f"Fetching activities from Strava API for {current_year}")
             activities = get_all_activities()
             if activities is not None:
+                # Filter and clean only the runs for current year
+                runs_2025 = [clean_activity_data(a) for a in activities 
+                            if a.get('type') == 'Run' and 
+                            str(current_year) in a.get('start_date', '')]
+                runs_2025 = [r for r in runs_2025 if r is not None]  # Remove any None values
+                
                 # Store in session for future use (serialize to JSON)
-                session['activities'] = json.dumps(activities)
-                logger.info(f"Stored {len(activities)} activities in session")
+                session['runs_2025'] = json.dumps(runs_2025)
+                logger.info(f"Stored {len(runs_2025)} runs from {current_year} in session")
         
         if activities is None:
             logger.error("Failed to fetch activities due to authentication error")
@@ -1448,32 +1473,45 @@ def generate_poster():
         return jsonify({'error': 'Not authenticated'}), 401
         
     try:
-        # Check if we should force refresh the activities
-        force_refresh = request.args.get('force_refresh', '').lower() == 'true'
+        # Get runs from session if available
+        current_year = datetime.now().year
+        runs = None
         
-        # Get activities data from session or fetch if not available
-        activities = None
-        if not force_refresh and 'activities' in session:
+        # Try to get runs from session first
+        if 'runs_2025' in session:
+            try:
+                runs = json.loads(session['runs_2025'])
+                logger.info(f"Using {len(runs)} runs from {current_year} from session")
+            except Exception as e:
+                logger.warning(f"Error loading runs from session: {e}")
+        
+        # If not in session, try to get from activities
+        if not runs and 'activities' in session:
             try:
                 activities = json.loads(session['activities'])
-                logger.info(f"Using {len(activities)} activities from session")
+                runs = [clean_activity_data(a) for a in activities 
+                       if a.get('type') == 'Run' and 
+                       str(current_year) in a.get('start_date', '')]
+                runs = [r for r in runs if r is not None]
+                logger.info(f"Generated {len(runs)} runs from activities in session")
             except Exception as e:
-                logger.warning(f"Error loading activities from session: {e}")
+                logger.warning(f"Error processing activities from session: {e}")
         
-        # If not in session or force refresh, fetch from Strava
-        if not activities or force_refresh:
-            logger.info("Fetching activities from Strava API")
+        # If still no runs, fetch from API
+        if not runs:
+            logger.info("No runs in session, fetching from API")
             activities = get_all_activities()
-            if activities is not None:
-                # Store in session for future use (serialize to JSON)
-                session['activities'] = json.dumps(activities)
-                logger.info(f"Stored {len(activities)} activities in session")
-        
-        if not activities:
-            return jsonify({'error': 'No activities found'}), 404
+            if not activities:
+                return jsonify({'error': 'No activities found'}), 404
             
-        current_year = datetime.now().year
-        runs = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith(str(current_year))]
+            runs = [clean_activity_data(a) for a in activities 
+                   if a.get('type') == 'Run' and 
+                   str(current_year) in a.get('start_date', '')]
+            runs = [r for r in runs if r is not None]
+            
+            # Store in session for future use
+            session['runs_2025'] = json.dumps(runs)
+            logger.info(f"Stored {len(runs)} runs from {current_year} in session")
         
         if not runs:
             return jsonify({'error': f'No runs found for {current_year}'}), 404
@@ -1509,7 +1547,6 @@ def generate_poster():
         # Call OpenAI DALL-E API directly
         try:
             import requests
-            import json
             
             headers = {
                 'Content-Type': 'application/json',
@@ -1527,7 +1564,8 @@ def generate_poster():
             response = requests.post(
                 'https://api.openai.com/v1/images/generations',
                 headers=headers,
-                data=json.dumps(data)
+                json=data,
+                timeout=30
             )
             
             if response.status_code == 200:
