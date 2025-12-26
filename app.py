@@ -78,7 +78,7 @@ logger.info(f"OPENAI_API_KEY present: {'OPENAI_API_KEY' in os.environ}")
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 # OpenAI API settings
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-openai-api-key-here')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # Constants
 # --------
