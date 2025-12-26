@@ -1541,91 +1541,152 @@ def download_activities():
     fmt = (request.args.get('format') or 'csv').lower()
     runs = _get_display_runs()
     if runs is None:
+        logger.warning('No runs data available')
         return redirect('/login')
-
-    # Build rows
-    rows = []
+    
+    # Rebuild the CSV data to ensure consistency
+    csv_data = 'Date,Activity,Distance (km),Duration,Pace (min/km)\n'
     for run in runs:
         try:
-            utc_date_str = run.get('start_date')
-            if utc_date_str:
+            # Convert UTC to IST for CSV
+            utc_date_str = run.get('start_date', 'N/A')
+            if utc_date_str and utc_date_str != 'N/A':
                 utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
                 ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
                 date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
             else:
-                date = ''
-
-            name = run.get('name', '')
+                date = 'N/A'
+            
+            name = (run.get('name', 'Unknown Activity') or 'Unknown Activity').replace(',', ';')
             distance = round(float(run.get('distance', 0)) / 1000, 2)
             time_sec = int(run.get('moving_time', 0))
-            if time_sec > 0 and distance > 0:
-                pace_min_per_km = time_sec / 60 / distance
-                pace_str = f"{int(pace_min_per_km)}:{int((pace_min_per_km - int(pace_min_per_km)) * 60):02d}"
+            
+            # Format time
+            if time_sec > 0:
+                hours = time_sec // 3600
+                minutes = (time_sec % 3600) // 60
+                seconds = time_sec % 60
+                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             else:
-                pace_str = ''
-
-            hours = time_sec // 3600
-            minutes = (time_sec % 3600) // 60
-            seconds = time_sec % 60
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-            rows.append({'Date': date, 'Activity': name, 'Distance (km)': distance, 'Duration': time_str, 'Pace (min/km)': pace_str})
-        except Exception:
+                time_str = "00:00:00"
+            
+            # Calculate pace
+            if distance > 0:
+                pace_min_per_km = time_sec / 60 / distance
+                pace_min = int(pace_min_per_km)
+                pace_sec = int((pace_min_per_km - pace_min) * 60)
+                pace_str = f"{pace_min}:{pace_sec:02d}"
+            else:
+                pace_str = "N/A"
+            
+            csv_data += f'"{date}","{name}",{distance},"{time_str}","{pace_str}"\n'
+        except Exception as e:
+            logger.error(f"Error formatting run data: {e}")
             continue
 
+    # For CSV format, return the CSV data directly
     if fmt == 'csv':
-        # build CSV
-        out = io.StringIO()
-        headers = ['Date', 'Activity', 'Distance (km)', 'Duration', 'Pace (min/km)']
-        out.write(','.join(headers) + '\n')
-        for r in rows:
-            line = ','.join('"' + str(r.get(h, '')).replace('"', '""') + '"' for h in headers)
-            out.write(line + '\n')
-        out.seek(0)
-        return Response(out.getvalue(), mimetype='text/csv', headers={
-            'Content-Disposition': 'attachment; filename="activities_2025.csv"'
-        })
+        return Response(
+            csv_data,
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment; filename="activities_2025.csv"'}
+        )
 
+    # For Excel format, convert CSV to Excel
     if fmt == 'excel' or fmt == 'xlsx':
         if pd is None:
             return jsonify({'error': 'pandas not installed on server'}), 500
-        df = pd.DataFrame(rows)
-        bio = io.BytesIO()
         try:
+            # Convert CSV string to DataFrame
+            import io
+            df = pd.read_csv(io.StringIO(csv_data))
+            bio = io.BytesIO()
             df.to_excel(bio, index=False, engine='openpyxl')
+            bio.seek(0)
+            return send_file(
+                bio,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                download_name='activities_2025.xlsx',
+                as_attachment=True
+            )
         except Exception as e:
-            logger.error(f"Error writing excel: {e}")
-            return jsonify({'error': 'Failed to generate excel'}), 500
-        bio.seek(0)
-        return send_file(bio, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', download_name='activities_2025.xlsx', as_attachment=True)
+            logger.error(f"Error generating Excel: {e}")
+            return jsonify({'error': 'Failed to generate Excel file'}), 500
 
+    # For PDF format, generate PDF
     if fmt == 'pdf':
         if colors is None:
             return jsonify({'error': 'reportlab not installed on server'}), 500
-        bio = io.BytesIO()
-        doc = SimpleDocTemplate(bio, pagesize=A4)
-        data = [['Date', 'Activity', 'Distance (km)', 'Duration', 'Pace (min/km)']]
-        for r in rows:
-            data.append([r['Date'], r['Activity'], str(r['Distance (km)']), r['Duration'], r['Pace (min/km)']])
-        table = Table(data, repeatRows=1)
-        style = TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('ALIGN', (2,1), (2,-1), 'RIGHT')
-        ])
-        table.setStyle(style)
-        elems = [table]
         try:
-            doc.build(elems)
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib import colors as rl_colors
+            
+            # Convert CSV to list of lists for PDF
+            lines = [line.split(',') for line in csv_data.split('\n') if line.strip()]
+            if not lines:
+                return jsonify({'error': 'No data available to generate PDF'}), 400
+                
+            # Create PDF
+            bio = io.BytesIO()
+            doc = SimpleDocTemplate(bio, pagesize=letter)
+            
+            # Process data for PDF table
+            data = []
+            for i, line in enumerate(lines):
+                if i == 0:  # Header row
+                    data.append([item.strip('"') for item in line])
+                else:
+                    # Keep date and time as is, but clean up other fields
+                    row = []
+                    for j, item in enumerate(line):
+                        item = item.strip('"')
+                        # Right-align numeric columns (Distance, Pace)
+                        if j == 2:  # Distance column
+                            try:
+                                item = f"{float(item):.2f}" if item.replace('.', '').isdigit() else item
+                            except:
+                                pass
+                        row.append(item)
+                    data.append(row)
+            
+            # Create table with adjusted column widths
+            col_widths = [120, 200, 80, 80, 80]  # Adjust these values as needed
+            table = Table(data, colWidths=col_widths, repeatRows=1)
+            
+            # Add style
+            style = TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), rl_colors.HexColor('#2c3e50')),
+                ('TEXTCOLOR', (0,0), (-1,0), rl_colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,0), 10),
+                ('BOTTOMPADDING', (0,0), (-1,0), 8),
+                ('BACKGROUND', (0,1), (-1,-1), rl_colors.white),
+                ('GRID', (0,0), (-1,-1), 1, rl_colors.lightgrey),
+                ('FONTSIZE', (0,1), (-1,-1), 8),
+                ('LEFTPADDING', (0,0), (-1,-1), 4),
+                ('RIGHTPADDING', (0,0), (-1,-1), 4),
+                ('ALIGN', (2,1), (2,-1), 'RIGHT'),  # Right-align distance
+                ('ALIGN', (4,1), (4,-1), 'RIGHT'),  # Right-align pace
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
+            ])
+            
+            table.setStyle(style)
+            doc.build([table])
+            bio.seek(0)
+            
+            return send_file(
+                bio,
+                mimetype='application/pdf',
+                download_name='activities_2025.pdf',
+                as_attachment=True
+            )
         except Exception as e:
-            logger.error(f"Error building PDF: {e}")
+            logger.error(f"Error generating PDF: {e}")
             return jsonify({'error': 'Failed to generate PDF'}), 500
-        bio.seek(0)
-        return send_file(bio, mimetype='application/pdf', download_name='activities_2025.pdf', as_attachment=True)
 
-    return jsonify({'error': 'Unsupported format'}), 400
+    return jsonify({'error': 'Invalid format. Use csv, excel, or pdf'}), 400
 
 
 def get_activity_kudos(activity_id, per_page=200, force_refresh=False):
