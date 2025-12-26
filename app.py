@@ -13,8 +13,9 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, redirect, session, url_for, jsonify
 import requests
 import tempfile
-import json
 import subprocess
+import sys
+import os
 from threading import Thread
 
 # Application Configuration
@@ -727,25 +728,55 @@ def get_stats_page():
         # Get the URL for the dashboard - use the same host as the current request
         dashboard_url = f"{request.host_url.rstrip('/')}:{os.environ.get('PORT', '8501')}/"
         
-        # Start Streamlit in a separate thread
+        # Start Streamlit in a separate thread with full Python path
         def run_streamlit():
-            cmd = [
-                'streamlit', 'run', 'dashboard.py',
-                f'--server.port={os.environ.get("PORT", "8501")}',
-                '--server.address=0.0.0.0',
-                '--server.enableCORS=false',
-                '--server.enableXsrfProtection=false'
-            ]
-            subprocess.Popen(cmd)
+            try:
+                # Get the Python executable path
+                python_path = sys.executable
+                cmd = [
+                    python_path, '-m', 'streamlit', 'run', 'dashboard.py',
+                    f'--server.port={os.environ.get("PORT", "8501")}',
+                    '--server.address=0.0.0.0',
+                    '--server.enableCORS=false',
+                    '--server.enableXsrfProtection=false',
+                    '--server.headless=true',
+                    '--browser.gatherUsageStats=false'
+                ]
+                logger.info(f"Starting Streamlit with command: {' '.join(cmd)}")
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                # Log output in background
+                def log_output(pipe, logger_func):
+                    for line in iter(pipe.readline, b''):
+                        if line:
+                            logger_func(line.decode().strip())
+                
+                # Start loggers
+                import threading
+                threading.Thread(target=log_output, args=(process.stdout, logger.info), daemon=True).start()
+                threading.Thread(target=log_output, args=(process.stderr, logger.error), daemon=True).start()
+                
+                return process
+            except Exception as e:
+                logger.error(f"Error starting Streamlit: {str(e)}", exc_info=True)
+                raise
         
-        # Only start Streamlit if it's not already running
+        # Start Streamlit in a separate process
         try:
-            response = requests.get('http://localhost:8501', timeout=1)
+            # Try to connect to check if already running
+            response = requests.get(f'http://localhost:{os.environ.get("PORT", "8501")}', timeout=1)
             if response.status_code != 200:
                 thread = Thread(target=run_streamlit)
                 thread.daemon = True
                 thread.start()
-        except requests.exceptions.RequestException:
+                logger.info("Started new Streamlit process")
+            else:
+                logger.info("Streamlit appears to be already running")
+        except (requests.exceptions.RequestException, ConnectionRefusedError) as e:
+            logger.info(f"Starting new Streamlit process (error was: {str(e)})")
             thread = Thread(target=run_streamlit)
             thread.daemon = True
             thread.start()
