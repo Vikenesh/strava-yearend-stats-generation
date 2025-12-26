@@ -8,11 +8,13 @@ import logging
 import os
 import time
 import io
+import base64
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
 import requests
+from groq import Groq
 
 try:
     import pandas as pd
@@ -67,6 +69,9 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-202
 CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID')
 CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
 
+# Groq API configuration
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+
 # Warn on startup if credentials are missing
 if not CLIENT_ID or not CLIENT_SECRET:
     logger.warning('STRAVA_CLIENT_ID or STRAVA_CLIENT_SECRET not set. Ensure Railway shared variables are configured.')
@@ -74,7 +79,7 @@ else:
     logger.info('STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET found in environment')
 
 # Log presence of other important vars (don't log secret values)
-logger.info(f"OPENAI_API_KEY present: {'OPENAI_API_KEY' in os.environ}")
+logger.info(f"GROQ_API_KEY present: {bool(GROQ_API_KEY)}")
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
 
@@ -1397,6 +1402,125 @@ ${{csvData}}`;
 
 
 
+
+def generate_grok_poster(activities, athlete_name):
+    """Generate a poster using Grok model with running stats."""
+    logger.info(f"Generating poster with Grok for {athlete_name} with {len(activities)} activities")
+    
+    if not GROQ_API_KEY:
+        logger.error("GROQ_API_KEY not set")
+        return None
+
+    try:
+        # Initialize Groq client
+        client = Groq(api_key=GROQ_API_KEY)
+        
+        # Prepare activity summary
+        total_distance = sum(act.get('distance', 0) for act in activities) / 1000  # Convert to km
+        total_time = sum(act.get('elapsed_time', 0) for act in activities) / 3600  # Convert to hours
+        avg_speed = sum(act.get('average_speed', 0) for act in activities) / len(activities) if activities else 0
+        avg_pace = 1000 / (avg_speed * 16.6667) if avg_speed > 0 else 0  # Convert m/s to min/km
+        
+        # Get monthly stats
+        monthly_stats = {}
+        for act in activities:
+            try:
+                month = datetime.strptime(act['start_date'].split('T')[0], '%Y-%m-%d').strftime('%B')
+                monthly_stats[month] = monthly_stats.get(month, 0) + (act.get('distance', 0) / 1000)  # km
+            except (KeyError, ValueError):
+                continue
+        
+        # Format prompt for Grok
+        prompt = f"""
+        Create a motivational running poster for {athlete_name} for {datetime.now().year} with the following stats:
+        - Total Runs: {len(activities)}
+        - Total Distance: {total_distance:.1f} km
+        - Total Time: {total_time:.1f} hours
+        - Average Pace: {avg_pace:.2f} min/km
+        - Monthly Stats: {json.dumps(monthly_stats, indent=2)}
+        
+        The poster should be:
+        1. Visually appealing with a sports/running theme
+        2. Include motivational elements
+        3. Use a clean, modern design
+        4. Highlight key achievements
+        5. Be suitable for sharing on social media
+        
+        Return the poster as an HTML+CSS design that can be rendered in a web browser.
+        """
+        
+        # Call Grok API
+        response = client.chat.completions.create(
+            model="mixtral-8x7b-32768",
+            messages=[
+                {"role": "system", "content": "You are a creative designer who creates beautiful, responsive HTML+CSS posters for runners."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=4000
+        )
+        
+        # Extract the generated content
+        poster_html = response.choices[0].message.content
+        
+        # Clean up the response to ensure it's valid HTML
+        if '```html' in poster_html:
+            poster_html = poster_html.split('```html')[1].split('```')[0].strip()
+        elif '```' in poster_html:
+            poster_html = poster_html.split('```')[1].split('```')[0].strip()
+        
+        return poster_html
+        
+    except Exception as e:
+        logger.error(f"Error generating Grok poster: {str(e)}")
+        return None
+
+@app.route('/generate-grok-poster', methods=['POST'])
+def generate_grok_poster_route():
+    """API endpoint to generate a poster using Grok model."""
+    if 'access_token' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
+    try:
+        current_year = datetime.now().year
+        athlete = session.get('athlete_info', {})
+        athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
+        
+        # Fetch fresh activities
+        activities = get_all_activities()
+        if not activities:
+            return jsonify({'error': 'No activities found'}), 404
+        
+        # Filter runs for current year
+        runs = [
+            clean_activity_data(a) 
+            for a in activities 
+            if a.get('type') == 'Run' and str(current_year) in a.get('start_date', '')
+        ]
+        runs = [r for r in runs if r is not None]
+        
+        if not runs:
+            return jsonify({'error': f'No runs found for {current_year}'}), 404
+        
+        # Generate poster
+        poster_html = generate_grok_poster(runs, athlete_name)
+        if not poster_html:
+            return jsonify({'error': 'Failed to generate poster'}), 500
+        
+        return jsonify({
+            'success': True,
+            'poster_html': poster_html,
+            'stats': {
+                'total_runs': len(runs),
+                'total_distance_km': round(sum(r.get('distance', 0) / 1000 for r in runs), 1),
+                'total_time_hours': round(sum(r.get('elapsed_time', 0) for r in runs) / 3600, 1),
+                'year': current_year
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in generate_grok_poster_route: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
     logger.info("Starting Flask app...")
