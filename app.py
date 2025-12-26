@@ -817,6 +817,25 @@ def get_stats_page():
         logger.info(f"Generating stats page for athlete: {athlete_name}")
         logger.debug(f"athlete_name type: {type(athlete_name)}, value: {repr(athlete_name)}")
         
+        # Dashboard button HTML
+        dashboard_button = f"""
+        <div style="text-align: center; margin: 20px 0;">
+            <a href="/dashboard" style="
+                display: inline-block;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 15px 30px;
+                text-decoration: none;
+                border-radius: 50px;
+                font-weight: bold;
+                font-size: 1.2em;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+                transition: all 0.3s ease;
+                margin: 20px 0;
+            ">🚀 View Interactive Dashboard</a>
+        </div>
+        """
+        
         logger.info("Fetching all activities")
         activities = get_all_activities()
         if activities is None:
@@ -833,9 +852,12 @@ def get_stats_page():
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
         logger.info("Sorted runs by date (newest first)")
         
+        # Add dashboard button and header
+        logger.info("Creating dashboard button and header")
+        
         # Create table rows for 2025 runs only - display all runs
         logger.info("Creating table rows for display")
-        table_rows = ""
+        table_rows = dashboard_button  # Add dashboard button at the top
         max_runs = len(runs_2025)  # Display all runs
         logger.info(f"Will display all {max_runs} runs")
         
