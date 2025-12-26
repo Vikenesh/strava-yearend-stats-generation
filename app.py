@@ -1539,73 +1539,9 @@ def download_activities():
 
 @app.route('/generate-poster', methods=['POST'])
 def generate_poster():
-    """
-    Generate a doodle poster using OpenAI's DALL-E API based on the provided prompt.
-    Expects a JSON payload with a 'prompt' field.
-    Returns the generated image URL or an error message.
-    """
-    logger.info("Received request to generate poster")
-    
-    # Get API key from environment variables (set in Railway)
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        logger.error("OpenAI API key not found in environment variables")
-        return jsonify({'error': 'OpenAI API key not configured'}), 500
-    
-    # Get prompt from request
-    data = request.get_json()
-    if not data or 'prompt' not in data:
-        logger.warning("No prompt provided in request")
-        return jsonify({'error': 'Prompt is required'}), 400
-    
-    prompt = data['prompt']
-    logger.info(f"Generating image for prompt: {prompt[:100]}...")
-    
-    try:
-        # Call OpenAI DALL-E API
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}'
-        }
-        
-        payload = {
-            'model': 'dall-e-3',  # or 'dall-e-2' if you prefer
-            'prompt': prompt,
-            'n': 1,  # Number of images to generate
-            'size': '1024x1024',  # Image size
-            'quality': 'standard',  # 'standard' or 'hd'
-            'style': 'vivid'  # 'vivid' or 'natural'
-        }
-        
-        response = requests.post(
-            'https://api.openai.com/v1/images/generations',
-            headers=headers,
-            json=payload,
-            timeout=30  # 30 seconds timeout
-        )
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        if 'data' in result and len(result['data']) > 0:
-            image_url = result['data'][0].get('url')
-            if image_url:
-                logger.info("Successfully generated image")
-                return jsonify({
-                    'success': True,
-                    'image_url': image_url,
-                    'revised_prompt': result.get('data', [{}])[0].get('revised_prompt', '')
-                })
-        
-        logger.error(f"Unexpected response from OpenAI: {result}")
-        return jsonify({'error': 'Failed to generate image', 'details': result.get('error', {}).get('message', 'Unknown error')}), 500
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling OpenAI API: {str(e)}")
-        return jsonify({'error': 'Failed to connect to OpenAI API', 'details': str(e)}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
+    """Endpoint for generating posters (currently disabled)."""
+    logger.warning("Poster generation functionality has been disabled")
+    return jsonify({'error': 'Poster generation functionality has been disabled.'}), 410  # 410 Gone
 
 
 def get_activity_kudos(activity_id, per_page=200, force_refresh=False):
