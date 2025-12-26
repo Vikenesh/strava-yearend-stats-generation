@@ -12,6 +12,7 @@ from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
+import requests
 
 try:
     import pandas as pd
