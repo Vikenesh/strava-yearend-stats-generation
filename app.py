@@ -62,6 +62,10 @@ def clean_activity_data(activity):
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strava-stats-secret-key-2024')
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)  # Session expires after 1 hour
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True  # Requires HTTPS
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # API Configuration
 # ----------------
@@ -1501,58 +1505,95 @@ def generate_grok_poster(activities, athlete_name):
 @app.route('/generate-grok-poster', methods=['POST'])
 def generate_grok_poster_route():
     """API endpoint to generate a poster using xAI Grok model."""
+    logger.info("=== /generate-grok-poster endpoint called ===")
+    logger.info(f"Request headers: {dict(request.headers)}")
+    
     if 'access_token' not in session:
+        logger.warning("Authentication failed: No access token in session")
+        logger.info(f"Session data: {dict(session)}")
         return jsonify({'error': 'Not authenticated'}), 401
     
     try:
+        logger.info("=== Starting poster generation ===")
         current_year = datetime.now().year
+        logger.info(f"Current year: {current_year}")
+        
         athlete = session.get('athlete_info', {})
+        logger.info(f"Athlete info from session: {athlete}")
+        
         athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
+        logger.info(f"Processing poster for athlete: {athlete_name}")
         
         # Check if xAI API key is configured
         if not XAI_API_KEY:
-            logger.error("XAI_API_KEY not configured")
+            logger.error("XAI_API_KEY not configured in environment")
+            logger.error(f"Environment keys: {', '.join(os.environ.keys())}")
             return jsonify({'error': 'xAI API key not configured'}), 500
         
         # Fetch fresh activities
+        logger.info("Fetching activities...")
         activities = get_all_activities()
+        logger.info(f"Retrieved {len(activities) if activities else 0} activities")
+        
         if not activities:
+            logger.warning("No activities found for the user")
             return jsonify({'error': 'No activities found'}), 404
         
         # Filter runs for current year
-        runs = [
-            clean_activity_data(a) 
-            for a in activities 
-            if a.get('type') == 'Run' and str(current_year) in a.get('start_date', '')
-        ]
-        runs = [r for r in runs if r is not None]
+        logger.info(f"Filtering runs for year {current_year}...")
+        runs = []
+        for a in activities:
+            activity_type = a.get('type')
+            start_date = a.get('start_date', '')
+            logger.debug(f"Activity: type={activity_type}, date={start_date}")
+            if activity_type == 'Run' and str(current_year) in start_date:
+                cleaned = clean_activity_data(a)
+                if cleaned is not None:
+                    runs.append(cleaned)
         
+        logger.info(f"Found {len(runs)} runs for {current_year}")
         if not runs:
+            logger.warning(f"No runs found for year {current_year}")
             return jsonify({'error': f'No runs found for {current_year}'}), 404
         
         # Generate poster using xAI Grok
-        logger.info(f"Generating poster for {athlete_name} with {len(runs)} runs")
-        poster_html = generate_grok_poster(runs, athlete_name)
-        
-        if not poster_html:
-            logger.error("Failed to generate poster: Empty response from xAI Grok")
-            return jsonify({'error': 'Failed to generate poster'}), 500
+        logger.info(f"Initiating poster generation for {athlete_name} with {len(runs)} runs")
+        try:
+            poster_html = generate_grok_poster(runs, athlete_name)
+            logger.info("Poster generation completed")
+            
+            if not poster_html:
+                logger.error("Poster generation failed: Empty response from generate_grok_poster")
+                return jsonify({'error': 'Failed to generate poster (empty response)'}), 500
+                
+        except Exception as e:
+            logger.error(f"Error in generate_grok_poster: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error generating poster: {str(e)}'}), 500
         
         # Calculate stats for the response
+        logger.info("Calculating run statistics...")
         total_distance = round(sum(r.get('distance', 0) / 1000 for r in runs), 1)
         total_time = round(sum(r.get('elapsed_time', 0) for r in runs) / 3600, 1)
         
-        return jsonify({
+        stats = {
+            'athlete_name': athlete_name,
+            'total_runs': len(runs),
+            'total_distance_km': total_distance,
+            'total_time_hours': total_time,
+            'year': current_year
+        }
+        
+        logger.info(f"Generated stats: {stats}")
+        logger.info("Sending successful response")
+        
+        response_data = {
             'success': True,
-            'poster_html': poster_html,
-            'stats': {
-                'athlete_name': athlete_name,
-                'total_runs': len(runs),
-                'total_distance_km': total_distance,
-                'total_time_hours': total_time,
-                'year': current_year
-            }
-        })
+            'poster_html': poster_html[:100] + '...' if poster_html else 'None',  # Log first 100 chars
+            'stats': stats
+        }
+        
+        logger.info(f"Response data prepared. Stats: {stats}")
+        return jsonify(response_data)
         
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error in generate_grok_poster_route: {str(e)}")
@@ -1561,9 +1602,89 @@ def generate_grok_poster_route():
         logger.error(f"Error in generate_grok_poster_route: {str(e)}", exc_info=True)
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/')
+def index():
+    """List all available routes."""
+    routes = []
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint != 'static':  # Skip static files
+            methods = ','.join(m for m in rule.methods if m not in ['HEAD', 'OPTIONS'])
+            routes.append({
+                'endpoint': rule.endpoint,
+                'methods': methods,
+                'rule': rule.rule,
+                'doc': app.view_functions[rule.endpoint].__doc__ or 'No docstring'
+            })
+    
+    # Create a simple HTML page with the routes
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Available Routes</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #333; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .method-get { color: #2ecc71; }
+            .method-post { color: #3498db; }
+            .method-put { color: #f39c12; }
+            .method-delete { color: #e74c3c; }
+            .method { font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>Available Routes</h1>
+        <table>
+            <tr>
+                <th>Endpoint</th>
+                <th>Methods</th>
+                <th>URL Rule</th>
+                <th>Description</th>
+            </tr>
+    """
+    
+    for route in sorted(routes, key=lambda x: x['rule']):
+        method_classes = {
+            'GET': 'method-get',
+            'POST': 'method-post',
+            'PUT': 'method-put',
+            'DELETE': 'method-delete'
+        }
+        
+        methods_html = []
+        for method in route['methods'].split(','):
+            if method in method_classes:
+                methods_html.append(f'<span class="method {method_classes[method]}">{method}</span>')
+            else:
+                methods_html.append(f'<span class="method">{method}</span>')
+        
+        html += f"""
+        <tr>
+            <td><code>{route['endpoint']}</code></td>
+            <td>{' '.join(methods_html)}</td>
+            <td><code>{route['rule']}</code></td>
+            <td>{route['doc']}</td>
+        </tr>
+        """
+    
+    html += """
+        </table>
+        <p style="margin-top: 20px; color: #666;">
+            Note: Make sure to use the correct HTTP method when making requests.
+        </p>
+    </body>
+    </html>
+    """
+    
+    return html
+
 if __name__ == '__main__':
     logger.info("Starting Flask app...")
     logger.info(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"Starting on port {port}")
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)

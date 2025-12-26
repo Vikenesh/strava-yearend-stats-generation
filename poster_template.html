@@ -274,22 +274,25 @@
 
     // AI Poster Generation
     document.getElementById('generateAIPosterBtn').addEventListener('click', async () => {
-      const container = document.getElementById('aiPosterContainer');
-      const loading = document.getElementById('aiPosterLoading');
-      const image = document.getElementById('aiPosterImage');
+      const btn = document.getElementById('generateAIPosterBtn');
+      const loadingDiv = document.getElementById('aiPosterLoading');
+      const posterContainer = document.getElementById('aiPosterContainer');
+      const posterImage = document.getElementById('aiPosterImage');
       
       try {
-        container.style.display = 'block';
-        loading.style.display = 'block';
-        image.style.display = 'none';
+        // Show loading state
+        btn.disabled = true;
+        loadingDiv.style.display = 'block';
+        posterContainer.style.display = 'block';
+        posterImage.style.display = 'none';
         
-        // Call our actual backend endpoint
-        const response = await fetch('/generate-poster', {
+        // Make API call to generate poster
+        const response = await fetch('/generate-grok-poster', {
           method: 'POST',
           headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          }
+            'Content-Type': 'application/json',
+          },
+          credentials: 'same-origin'
         });
         
         if (!response.ok) {
