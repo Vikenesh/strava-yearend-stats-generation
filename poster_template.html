@@ -19,9 +19,24 @@
     <div class="controls">
       <button id="renderBtn">Render Sample Poster</button>
       <button id="exportBtn">Export PNG</button>
+      <button id="generateAIPosterBtn" style="background: #10a37f;">Generate AI Poster</button>
     </div>
     <div id="svgHolder"></div>
+    <div id="aiPosterContainer" style="display: none; margin-top: 20px; text-align: center;">
+      <h3>AI-Generated Poster</h3>
+      <div id="aiPosterLoading" style="display: none; margin: 20px 0;">
+        <p>Generating your custom poster with AI... This may take a moment.</p>
+        <div class="loader" style="border: 5px solid #f3f3f3; border-top: 5px solid #10a37f; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 10px auto;"></div>
+      </div>
+      <img id="aiPosterImage" style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" />
+    </div>
     <div class="note">This template uses Rough.js to draw a doodle-style running summary. Call <code>renderPoster(data, 'svgHolder')</code> with your data. The server replaces <code>__SAMPLE_DATA__</code> with live JSON when available.</div>
+    <style>
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
   </div>
 
   <script>
@@ -257,6 +272,48 @@
       img.src = url;
     });
 
+    // AI Poster Generation
+    document.getElementById('generateAIPosterBtn').addEventListener('click', async () => {
+      const container = document.getElementById('aiPosterContainer');
+      const loading = document.getElementById('aiPosterLoading');
+      const image = document.getElementById('aiPosterImage');
+      
+      try {
+        container.style.display = 'block';
+        loading.style.display = 'block';
+        image.style.display = 'none';
+        
+        const response = await fetch('/generate_poster_image', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt: '' // Let the server generate a default prompt based on the data
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to generate poster');
+        }
+        
+        const data = await response.json();
+        if (data.image_url) {
+          image.src = data.image_url;
+          image.style.display = 'block';
+          // Scroll to the generated image
+          container.scrollIntoView({ behavior: 'smooth' });
+        } else {
+          throw new Error('No image URL returned');
+        }
+      } catch (error) {
+        console.error('Error generating AI poster:', error);
+        alert('Failed to generate AI poster. Please try again.');
+      } finally {
+        loading.style.display = 'none';
+      }
+    });
+    
     // Expose globally for programmatic use
     window.renderPoster = renderPoster;
   </script>
