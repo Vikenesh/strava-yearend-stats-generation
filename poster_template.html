@@ -283,28 +283,29 @@
         loading.style.display = 'block';
         image.style.display = 'none';
         
-        const response = await fetch('/generate_poster_image', {
+        // Call our actual backend endpoint
+        const response = await fetch('/generate-poster', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt: '' // Let the server generate a default prompt based on the data
-          })
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
         });
         
         if (!response.ok) {
-          throw new Error('Failed to generate poster');
+          const error = await response.json().catch(() => ({}));
+          throw new Error(error.error || 'Failed to generate poster');
         }
         
         const data = await response.json();
-        if (data.image_url) {
+        if (data.success && data.image_url) {
           image.src = data.image_url;
+          image.alt = 'AI Generated Running Poster';
           image.style.display = 'block';
           // Scroll to the generated image
           container.scrollIntoView({ behavior: 'smooth' });
         } else {
-          throw new Error('No image URL returned');
+          throw new Error(data.error || 'No image URL returned');
         }
       } catch (error) {
         console.error('Error generating AI poster:', error);
