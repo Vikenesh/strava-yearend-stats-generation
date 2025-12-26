@@ -13,23 +13,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, redirect, session, url_for, jsonify
 import requests
 import tempfile
-import subprocess
-import sys
 import os
-import socket
-from threading import Thread
 
-def find_available_port(start_port=8501, max_attempts=10):
-    """Find an available port starting from start_port"""
-    port = start_port
-    for _ in range(max_attempts):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
-                return port
-        except OSError:
-            port += 1
-    return start_port  # Fallback to start_port if no port is available
 
 # Application Configuration
 # ======================
@@ -707,7 +692,7 @@ def get_stats_page():
     # Add dashboard link to the navigation
     dashboard_link = """
     <div style="text-align: center; margin: 20px 0;">
-        <a href="/dashboard" class="btn btn-primary" style="background-color: #FF4500; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin: 10px;">
+        <a href="/dashboard-view" class="btn btn-primary" style="background-color: #FF4500; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin: 10px;">
             🚀 View Interactive Dashboard
         </a>
     </div>
@@ -738,161 +723,32 @@ def get_stats_page():
         with open(activities_file, 'w') as f:
             json.dump(serializable_activities, f)
         
-        # Get and validate the port
+        # Construct dashboard URL
         try:
-            port = int(os.environ.get('PORT', '0'))
-            if not (0 < port <= 65535):
-                port = find_available_port(8501)
-                logger.info(f"Using dynamically found available port: {port}")
-        except (ValueError, TypeError) as e:
-            port = find_available_port(8501)
-            logger.info(f"Using dynamically found available port: {port}")
-            
-        # Store the port in the session so we can use it in the dashboard route
-        session['dashboard_port'] = port
-            
-        # Construct dashboard URL safely
-        try:
-            # For Railway, we need to use the provided host URL without appending the port
-            # as Railway handles the routing internally
-            if 'RAILWAY_STATIC_URL' in os.environ:
-                dashboard_url = f"{os.environ['RAILWAY_STATIC_URL']}/dashboard"
-            else:
-                base_url = request.host_url.rstrip('/')
-                dashboard_url = f"{base_url}/dashboard"
-                
-            logger.info(f"Dashboard URL: {dashboard_url}")
-        except Exception as e:
-            logger.error(f"Error constructing dashboard URL: {e}")
-            dashboard_url = f"http://localhost:{port}/dashboard"
-        
-        # Start Streamlit in a separate thread with full Python path
-        def run_streamlit():
-            try:
-                # Get the Python executable path and verify streamlit is importable
-                python_path = sys.executable
-                
-                # Test if streamlit is importable
-                try:
-                    import streamlit
-                    logger.info(f"Streamlit version: {streamlit.__version__}")
-                except ImportError as e:
-                    logger.error(f"Streamlit import failed: {str(e)}")
-                    logger.error("Please install streamlit using: pip install streamlit==1.28.0")
-                    return
-                
-                # Use the port we found earlier
-                port = session.get('dashboard_port', 8501)
-                logger.info(f"Starting Streamlit with port: {port}")
-                
-                logger.info(f"Starting Streamlit server on port {port}")
-                cmd = [
-                    python_path, '-m', 'streamlit', 'run', 'dashboard.py',
-                    f'--server.port={port}',
-                    '--server.address=0.0.0.0',
-                    '--server.enableCORS=false',
-                    '--server.enableXsrfProtection=false',
-                    '--server.headless=true',
-                    '--browser.gatherUsageStats=false',
-                    '--logger.level=debug'
-                ]
-                
-                logger.info(f"Starting Streamlit with command: {' '.join(cmd)}")
-                logger.info(f"Python path: {python_path}")
-                logger.info(f"Working directory: {os.getcwd()}")
-                
-                # Set up environment with current environment plus any necessary overrides
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.getcwd()
-                
-                # Start the process
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-                # Log output in background
-                def log_output(pipe, logger_func):
-                    for line in iter(pipe.readline, b''):
-                        if line:
-                            logger_func(line.decode().strip())
-                
-                # Start loggers
-                import threading
-                threading.Thread(target=log_output, args=(process.stdout, logger.info), daemon=True).start()
-                threading.Thread(target=log_output, args=(process.stderr, logger.error), daemon=True).start()
-                
-                return process
-            except Exception as e:
-                logger.error(f"Error starting Streamlit: {str(e)}", exc_info=True)
-                raise
-        
-        # Start Streamlit in a separate process
-        try:
-            # Try to connect to check if already running
-            response = requests.get(f'http://localhost:{os.environ.get("PORT", "8501")}', timeout=1)
-            if response.status_code != 200:
-                thread = Thread(target=run_streamlit)
-                thread.daemon = True
-                thread.start()
-                logger.info("Started new Streamlit process")
-            else:
-                logger.info("Streamlit appears to be already running")
-        except (requests.exceptions.RequestException, ConnectionRefusedError) as e:
-            logger.info(f"Starting new Streamlit process (error was: {str(e)})")
-            thread = Thread(target=run_streamlit)
-            thread.daemon = True
-            thread.start()
-        
         # Add the HTML content to the response
         return f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Loading Dashboard...</title>
-            {dashboard_link}
-            <meta http-equiv="refresh" content="2;url={dashboard_url}">
+            <title>Your Running Stats</title>
             <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    height: 100vh;
-                    margin: 0;
-                    background: #f5f5f5;
-                }}
-                .loader {{
-                    text-align: center;
-                    padding: 20px;
-                    background: white;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                }}
-                .spinner {{
-                    border: 5px solid #f3f3f3;
-                    border-top: 5px solid #3498db;
-                    border-radius: 50%;
-                    width: 50px;
-                    height: 50px;
-                    animation: spin 1s linear infinite;
-                    margin: 0 auto 20px;
-                }}
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .header {{ text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }}
+                .dashboard-btn {{ display: inline-block; background: linear-gradient(135deg, #4CAF50, #45a049); color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 1.1em; margin: 20px 0; transition: all 0.3s ease; }}
+                .dashboard-btn:hover {{ transform: translateY(-2px); box-shadow: 0 4px 15px rgba(0,0,0,0.2); }}
             </style>
         </head>
         <body>
-            <div class="loader">
-                <div class="spinner"></div>
-                <h2>Loading Your Running Dashboard...</h2>
-                <p>If you're not redirected automatically, <a href="{dashboard_url}">click here</a>.</p>
+            <div class="container">
+                <div class="header">
+                    <h1>Your Running Stats</h1>
+                    <p>View your detailed running statistics and visualizations</p>
+                    <a href="/dashboard-view" class="dashboard-btn" target="_blank">Open Dashboard in New Tab</a>
+                </div>
+                
+                <!-- Your existing stats content here -->
+                {dashboard_link}
             </div>
         </body>
         </html>
@@ -952,6 +808,15 @@ def get_stats_page():
         
         # Add dashboard button and header
         logger.info("Creating dashboard button and header")
+        
+        # Save activities data for the dashboard
+        dashboard_data = {
+            'activities': serializable_activities,
+            'athlete': session.get('athlete_info', {})
+        }
+        dashboard_file = os.path.join(tempfile.gettempdir(), 'dashboard_data.json')
+        with open(dashboard_file, 'w') as f:
+            json.dump(dashboard_data, f)
         
         # Create table rows for 2025 runs only - display all runs
         logger.info("Creating table rows for display")
