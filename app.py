@@ -12,22 +12,13 @@ import base64
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
-import requests
+from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response, render_template
 import requests
 
 try:
     import pandas as pd
 except Exception:
     pd = None
-
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
-except Exception:
-    # reportlab not available
-    colors = None
 
 # Application Configuration
 # ======================
@@ -48,16 +39,18 @@ def clean_activity_data(activity):
     """
     if not isinstance(activity, dict):
         return None
-        
-    # Only keep essential fields and use minimal keys
-    return {
-        'i': activity.get('id'),  # id
-        't': activity.get('type'),  # type
-        'd': activity.get('start_date', '')[:10],  # date (YYYY-MM-DD)
-        'm': float(activity.get('distance', 0)),  # distance in meters
-        's': float(activity.get('average_speed', 0)),  # speed in m/s
-        'e': int(activity.get('elapsed_time', 0))  # elapsed time in seconds
-    }
+    
+    try:
+        return {
+            't': activity.get('type'),
+            'd': activity.get('start_date', '')[:10],
+            'm': float(activity.get('distance', 0)),
+            's': float(activity.get('average_speed', 0)),
+            'e': int(activity.get('elapsed_time', 0))
+        }
+    except Exception as e:
+        logger.error(f"Error cleaning activity data: {str(e)}")
+        return None
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -69,9 +62,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # API Configuration
 # ----------------
-# Strava API credentials from environment variables (no hardcoded defaults)
+# Strava API credentials from environment variables
 CLIENT_ID = os.environ.get('STRAVA_CLIENT_ID')
 CLIENT_SECRET = os.environ.get('STRAVA_CLIENT_SECRET')
+REDIRECT_URI = os.environ.get('REDIRECT_URI', 'https://strava-year-end-summary-production.up.railway.app/callback')
 
 # xAI Grok API configuration
 XAI_API_KEY = os.environ.get('XAI_API_KEY')
@@ -83,1418 +77,281 @@ if not CLIENT_ID or not CLIENT_SECRET:
 else:
     logger.info('STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET found in environment')
 
-# Log presence of other important vars (don't log secret values)
-logger.info(f"XAI_API_KEY present: {bool(XAI_API_KEY)}")
-REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
+if not XAI_API_KEY:
+    logger.warning('XAI_API_KEY not set. AI poster generation will not work.')
+else:
+    logger.info('XAI_API_KEY present: True')
 
+# Helper Functions
+# ===============
 
-# Constants
-# --------
-TOKEN_REFRESH_BUFFER = 300  # 5 minutes buffer for token refresh
-TOKEN_EXPIRY_BUFFER = 300  # 5 minutes buffer for token expiry
-ACTIVITIES_PER_PAGE = 200  # Max activities per page from Strava API
-
-def utc_to_ist(utc_datetime_str):
-    """Convert UTC datetime string to Indian Standard Time (IST) timezone.
-
-    Args:
-        utc_datetime_str (str): UTC datetime string in ISO format.
-
-    Returns:
-        datetime: Datetime object converted to IST timezone.
-    """
-    try:
-        utc_dt = datetime.fromisoformat(utc_datetime_str.replace('Z', '+00:00'))
-        ist_timezone = timezone(timedelta(hours=5, minutes=30))
-        return utc_dt.astimezone(ist_timezone)
-    except (ValueError, TypeError) as e:
-        logger.error(f"Error converting datetime: {e}")
-        return None
-
-def analyze_wrapped_stats(activities):
-    """Analyze activities for wrapped-style visualization
-    
-    Args:
-        activities: List of activity dictionaries with minimal fields:
-            - 't': activity type
-            - 'd': start date (YYYY-MM-DD)
-            - 'm': distance in meters
-            - 's': average speed in m/s
-            - 'e': elapsed time in seconds
-    """
-    logger.info("analyze_wrapped_stats called")
-    # Use 't' for type in the minimal format
-    runs = [a for a in activities if a.get('t') == 'Run']
-    
-    if not runs:
-        logger.info("No runs found")
-        return None
-    
-    # Convert all dates to IST and add metadata
-    ist_runs = []
-    for run in runs:
-        try:
-            # Convert date string to datetime object
-            run_date = datetime.strptime(run['d'], '%Y-%m-%d')
-            ist_run = {
-                'ist_date': run_date,
-                'distance': float(run.get('m', 0)),  # 'm' is distance in meters
-                'elapsed_time': int(run.get('e', 0)),  # 'e' is elapsed time in seconds
-                'speed': float(run.get('s', 0)),  # 's' is speed in m/s
-                'name': run.get('n', 'Run')  # 'n' for name, default to 'Run' if not present
-            }
-            ist_runs.append(ist_run)
-        except (ValueError, KeyError) as e:
-            logger.warning(f"Skipping run due to invalid data: {e}")
-            continue
-    
-    if not ist_runs:
-        logger.error("No valid runs found after processing")
-        return None
-    
-    # Basic stats
-    total_distance = sum(run['distance'] for run in ist_runs) / 1000  # km
-    total_time = sum(run['elapsed_time'] for run in ist_runs)  # seconds
-    total_activities = len(ist_runs)
-    
-    # Monthly breakdown
-    monthly_stats = defaultdict(lambda: {'distance': 0, 'count': 0, 'time': 0})
-    for run in ist_runs:
-        month_key = run['ist_date'].strftime('%Y-%m')
-        monthly_stats[month_key]['distance'] += run['distance'] / 1000  # km
-        monthly_stats[month_key]['count'] += 1
-        monthly_stats[month_key]['time'] += run['elapsed_time']
-    
-    # Fastest/Longest activities
-    fastest_run = min(ist_runs, key=lambda x: x['elapsed_time'] / (x['distance'] / 1000) if x['distance'] > 0 else float('inf'))
-    longest_run = max(ist_runs, key=lambda x: x['distance'])
-    
-    # Time patterns
-    early_morning_runs = [r for r in ist_runs if 5 <= r['ist_date'].hour < 9]
-    night_runs = [r for r in ist_runs if 20 <= r['ist_date'].hour or r['ist_date'].hour < 5]
-    
-    # Consistency streaks
-    dates = sorted(set(run['ist_date'].date() for run in ist_runs))
-    current_streak = 0
-    max_streak = 0
-    temp_streak = 0
-    
-    for i in range(len(dates)):
-        if i == 0:
-            temp_streak = 1
-        elif (dates[i] - dates[i-1]).days == 1:
-            temp_streak += 1
-        else:
-            max_streak = max(max_streak, temp_streak)
-            temp_streak = 1
-        max_streak = max(max_streak, temp_streak)
-    
-    # Check if current streak continues to today
-    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
-    if dates and (today - dates[-1]).days <= 1:
-        current_streak = temp_streak
-    
-    # Favorite day of week
-    day_counts = Counter(run['ist_date'].strftime('%A') for run in ist_runs)
-    favorite_day = day_counts.most_common(1)[0] if day_counts else ('None', 0)
-    
-    logger.info("Analysis completed")
-    return {
-        'total_distance': round(total_distance, 2),
-        'total_time_hours': round(total_time / 3600, 1),
-        'total_activities': total_activities,
-        'monthly_stats': dict(monthly_stats),
-        'fastest_run': {
-            'name': fastest_run['name'],
-            'pace': round((fastest_run['elapsed_time'] / 60) / (fastest_run['distance'] / 1000), 2),
-            'date': fastest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
-            'distance': round(fastest_run['distance'] / 1000, 2)
-        },
-        'longest_run': {
-            'name': longest_run['name'],
-            'distance': round(longest_run['distance'] / 1000, 2),
-            'date': longest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
-            'time': longest_run['elapsed_time'] // 60
-        },
-        'early_bird_count': len(early_morning_runs),
-        'night_owl_count': len(night_runs),
-        'current_streak': current_streak,
-        'max_streak': max_streak,
-        'favorite_day': favorite_day,
-        'avg_pace': round((total_time / 60) / total_distance, 2) if total_distance > 0 else 0,
-        'ist_runs': ist_runs
+def build_authorization_url():
+    """Build the Strava OAuth authorization URL."""
+    params = {
+        'client_id': CLIENT_ID,
+        'redirect_uri': REDIRECT_URI,
+        'response_type': 'code',
+        'scope': 'read,activity:read_all,profile:read_all',
+        'approval_prompt': 'force'
     }
+    query = '&'.join([f"{k}={v}" for k, v in params.items()])
+    return f"https://www.strava.com/oauth/authorize?{query}"
 
 def refresh_access_token():
-    """Refresh the Strava access token using the refresh token.
-
-    Returns:
-        bool: True if token was refreshed successfully, False otherwise.
-    """
-    logger.info("Attempting to refresh access token")
-
-    refresh_token = session.get('refresh_token')
-    if not refresh_token:
-        logger.error("No refresh token available in session")
+    """Refresh the Strava access token using the refresh token."""
+    if 'refresh_token' not in session:
+        logger.warning("No refresh token available")
         return False
-
-    token_data = {
+    
+    token_url = 'https://www.strava.com/oauth/token'
+    data = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
         'grant_type': 'refresh_token',
-        'refresh_token': refresh_token
+        'refresh_token': session['refresh_token']
     }
-
+    
     try:
-        response = requests.post(
-            'https://www.strava.com/oauth/token',
-            data=token_data,
-            timeout=10
-        )
-        logger.info("Token refresh response status: %s", response.status_code)
-
-        if response.status_code != 200:
-            logger.error(
-                "Token refresh failed with status %s: %s",
-                response.status_code,
-                response.text
-            )
+        response = requests.post(token_url, data=data)
+        if response.status_code == 200:
+            token_response = response.json()
+            session.update({
+                'access_token': token_response['access_token'],
+                'refresh_token': token_response.get('refresh_token', session['refresh_token']),
+                'token_expires_at': time.time() + token_response.get('expires_in', 21600)
+            })
+            logger.info("Token refreshed successfully")
+            return True
+        else:
+            logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
             return False
-
-        token_response = response.json()
-        session.update({
-            'access_token': token_response['access_token'],
-            'refresh_token': token_response.get('refresh_token', refresh_token),
-            'token_expires_at': time.time() + token_response.get('expires_in', 21600)
-        })
-
-        expiry_time = datetime.fromtimestamp(session['token_expires_at'])
-        logger.info("Token refreshed successfully, expires at: %s", expiry_time)
-        return True
-
-    except requests.exceptions.RequestException as e:
-        logger.error("Error during token refresh: %s", str(e))
+    except Exception as e:
+        logger.error(f"Error refreshing token: {str(e)}")
         return False
 
 def get_valid_access_token():
-    """Get a valid access token, refreshing if necessary.
-
-    Returns:
-        str or None: Valid access token if available, None otherwise.
-    """
-    # Check if we have a token
+    """Get a valid access token, refreshing if necessary."""
     if 'access_token' not in session:
-        logger.warning("No access token found in session")
         return None
-
-    # Check if token is still valid (with buffer)
+    
     expires_at = session.get('token_expires_at', 0)
-    current_time = time.time()
-
-    if current_time < (expires_at - TOKEN_REFRESH_BUFFER):
-        logger.debug("Using existing valid access token")
-        return session['access_token']
-
-    # Token is expired or about to expire, try to refresh
-    logger.info("Access token expired or about to expire, attempting refresh")
-    if refresh_access_token():
-        return session['access_token']
-
-    logger.error("Failed to refresh access token, re-authentication required")
-    return None
-
-def get_all_activities():
-    logger.info("get_all_activities called")
+    if time.time() >= (expires_at - 300):  # Refresh if token expires in less than 5 minutes
+        logger.info("Access token expired or about to expire, refreshing...")
+        if not refresh_access_token():
+            return None
     
-    # Get valid token (will refresh if needed)
-    token = get_valid_access_token()
-    if not token:
-        logger.error("No valid access token available")
-        return None
-    
-    headers = {'Authorization': f'Bearer {token}'}
-    all_activities = []
-    page = 1
-    # Helper for requests with retry/backoff for rate limiting and transient errors
-    def _get_with_retries(url, headers, max_retries=5):
-        attempt = 0
-        backoff = 1
-        while True:
-            try:
-                resp = requests.get(url, headers=headers, timeout=15)
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Request exception for {url}: {e}")
-                attempt += 1
-                if attempt > max_retries:
-                    raise
-                sleep_time = backoff
-                backoff = min(backoff * 2, 60)
-                logger.info(f"Sleeping {sleep_time}s before retrying request after exception")
-                time.sleep(sleep_time)
-                continue
+    return session['access_token']
 
-            # Rate limit handling
-            if resp.status_code == 429:
-                retry_after = resp.headers.get('Retry-After')
-                try:
-                    wait = int(retry_after) if retry_after else backoff
-                except Exception:
-                    wait = backoff
-                logger.warning(f"Received 429 for {url}, retrying after {wait}s")
-                attempt += 1
-                if attempt > max_retries:
-                    return resp
-                time.sleep(wait)
-                backoff = min(backoff * 2, 60)
-                continue
-
-            # Transient server errors
-            if resp.status_code in (500, 502, 503, 504):
-                attempt += 1
-                if attempt > max_retries:
-                    return resp
-                logger.warning(f"Server error {resp.status_code} for {url}, retrying in {backoff}s")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60)
-                continue
-
-            return resp
-
-    
-    logger.info("Fetching activities...")
-    while True:
-        url = f'https://www.strava.com/api/v3/athlete/activities?page={page}&per_page=200'
-        logger.debug(f"Fetching page {page}")
-        response = _get_with_retries(url, headers)
-        
-        # Handle 401/403 errors - try token refresh
-        if response.status_code in [401, 403]:
-            logger.warning(f"Authentication error ({response.status_code}), attempting token refresh")
-            if refresh_access_token():
-                token = session['access_token']
-                headers = {'Authorization': f'Bearer {token}'}
-                response = _get_with_retries(url, headers)
-            else:
-                logger.error("Token refresh failed, cannot fetch activities")
-                return None
-        
-        if response.status_code != 200:
-            logger.error(f"Error fetching page {page}: {response.status_code}")
-            break
-            
-        try:
-            data = response.json()
-        except Exception as e:
-            logger.error(f"Error parsing JSON: {e}")
-            break
-        
-        if not data:  # No more activities
-            logger.info(f"Fetched {len(all_activities)} total activities from {page-1} pages")
-            break
-            
-        all_activities.extend(data)
-        logger.info(f"Fetched page {page}, got {len(data)} activities, total so far: {len(all_activities)}")
-        page += 1
-        
-        # Safety check to prevent infinite loops
-        if page > 10:
-            logger.warning("Safety limit reached, stopping fetch")
-            break
-    
-    logger.info(f"Total activities fetched: {len(all_activities)}")
-    return all_activities
-
-def analyze_with_chatgpt(activities, athlete_name):
-    """Analyze activities using ChatGPT API"""
-    logger.info(f"analyze_with_chatgpt called for {len(activities)} activities")
-    try:
-        # Filter for current year runs
-        current_year = datetime.now().year
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith(str(current_year))]
-        logger.info(f"Processing {len(runs_2025)} runs from {current_year}")
-        
-        # Prepare data for ChatGPT
-        summary = {
-            'athlete': athlete_name,
-            'total_runs': len(runs_2025),
-            'total_distance': round(sum(a['distance'] / 1000 for a in runs_2025), 2),
-            'recent_runs': []
-        }
-        
-        # Add recent 10 runs for detailed analysis
-        for run in runs_2025[:10]:
-            summary['recent_runs'].append({
-                'date': run['start_date'][:10],
-                'name': run['name'],
-                'distance_km': round(run['distance'] / 1000, 2),
-                'time_minutes': run['elapsed_time'] // 60,
-                'pace_min_per_km': round((run['elapsed_time'] / 60) / (run['distance'] / 1000), 2)
-            })
-        
-        # Create prompt for ChatGPT
-        prompt = f"""
-        Analyze this 2025 running data for {athlete_name}:
-        
-        Summary: {json.dumps(summary, indent=2)}
-        
-        Please provide:
-        1. Performance insights and trends
-        2. Training recommendations
-        3. Goal setting suggestions
-        4. Notable achievements
-        5. Areas for improvement
-        
-        Format the response in a clear, encouraging way suitable for an athlete.
-        """
-        
-        try:
-            headers = {
-                'Authorization': f'Bearer {OPENAI_API_KEY}',
-                'Content-Type': 'application/json'
-            }
-            
-            data = {
-                'model': 'gpt-3.5-turbo',
-                'messages': [
-                    {'role': 'system', 'content': 'You are a helpful running coach and data analyst.'},
-                    {'role': 'user', 'content': prompt}
-                ],
-                'max_tokens': 1000,
-                'temperature': 0.7
-            }
-            
-            response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
-            logger.info(f"OpenAI API response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.json()['choices'][0]['message']['content']
-                logger.info("Successfully received analysis from OpenAI")
-                return result
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                return f"OpenAI API Error: {response.status_code} - {response.text}"
-                
-        except Exception as e:
-            logger.error(f"Error calling OpenAI API: {str(e)}")
-            return f"Error calling OpenAI API: {str(e)}"
-            
-    except Exception as e:
-        logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
-        return f"Error in analyze_with_chatgpt: {str(e)}"
+# Routes
+# ======
 
 @app.route('/')
 def index():
+    """Main route - shows login or dashboard based on authentication status."""
     logger.info("Index route accessed")
-    logger.debug(f"Session keys: {list(session.keys())}")
     
     if 'access_token' in session:
-        logger.info("User is logged in, showing stats page")
-        return get_stats_page()
+        logger.info("User is authenticated, redirecting to stats")
+        return redirect('/stats')
     else:
-        logger.info("User not logged in, showing login page")
-        return '''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Year-End Running Summary for Strava - 2025</title>
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                
-                body {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    overflow: hidden;
-                }
-                
-                .container {
-                    text-align: center;
-                    padding: 2rem;
-                    max-width: 600px;
-                    position: relative;
-                }
-                
-                .year-display {
-                    font-size: 4rem;
-                    font-weight: bold;
-                    color: #ffffff;
-                    text-shadow: 3px 3px 6px rgba(0,0,0,0,0.3);
-                    margin-bottom: 1rem;
-                    animation: glow 2s ease-in-out infinite alternate;
-                }
-                
-                @keyframes glow {
-                    from {{ text-shadow: 3px 3px 6px rgba(0,0,0,0.3); }}
-                    to {{ text-shadow: 3px 3px 20px rgba(255,255,255,0.5); }}
-                }
-                
-                .title {
-                    font-size: 2.5rem;
-                    color: #ffffff;
-                    margin-bottom: 2rem;
-                    font-weight: 300;
-                }
-                
-                .subtitle {
-                    font-size: 1.2rem;
-                    color: #e0e0e0;
-                    margin-bottom: 3rem;
-                    line-height: 1.6;
-                }
-                
-                .login-btn {
-                    display: inline-block;
-                    background: linear-gradient(45deg, #ff6b6b, #ee5a52);
-                    color: white;
-                    padding: 1rem 2.5rem;
-                    text-decoration: none;
-                    border-radius: 50px;
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    transition: all 0.3s ease;
-                    box-shadow: 0 4px 15px rgba(238, 82, 83, 0.4);
-                }
-                
-                .login-btn:hover {
-                    transform: translateY(-3px);
-                    box-shadow: 0 8px 25px rgba(238, 82, 83, 0.6);
-                    background: linear-gradient(45deg, #ee5a52, #ff6b6b);
-                }
-                
-                .calendar-icon {
-                    font-size: 3rem;
-                    margin-bottom: 1rem;
-                    animation: spin 20s linear infinite;
-                }
-                
-                @keyframes spin {
-                    from {{ transform: rotate(0deg); }}
-                    to {{ transform: rotate(360deg); }}
-                }
-                
-                .confetti {
-                    position: absolute;
-                    width: 10px;
-                    height: 10px;
-                    background: #ff6b6b;
-                    animation: fall 3s linear infinite;
-                }
-                
-                .confetti:nth-child(1) {{ left: 10%; animation-delay: 0s; background: #ff6b6b; }}
-                .confetti:nth-child(2) {{ left: 20%; animation-delay: 0.5s; background: #4ecdc4; }}
-                .confetti:nth-child(3) {{ left: 30%; animation-delay: 1s; background: #45b7d1; }}
-                .confetti:nth-child(4) {{ left: 40%; animation-delay: 1.5s; background: #f9ca24; }}
-                .confetti:nth-child(5) {{ left: 50%; animation-delay: 2s; background: #f4d03f; }}
-                .confetti:nth-child(6) {{ left: 60%; animation-delay: 2.5s; background: #6c5ce7; }}
-                .confetti:nth-child(7) {{ left: 70%; animation-delay: 0.3s; background: #a8e6cf; }}
-                .confetti:nth-child(8) {{ left: 80%; animation-delay: 0.8s; background: #ffd700; }}
-                .confetti:nth-child(9) {{ left: 90%; animation-delay: 1.3s; background: #ff69b4; }}
-                
-                @keyframes fall {
-                    0% {{ transform: translateY(-100vh) rotate(0deg); opacity: 1; }}
-                    100% {{ transform: translateY(100vh) rotate(360deg); opacity: 0; }}
-                }
-                
-                .features {
-                    margin-top: 2rem;
-                    color: #e0e0e0;
-                }
-                
-                .feature {
-                    margin: 0.5rem 0;
-                    font-size: 0.9rem;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            <div class="confetti"></div>
-            
-            <div class="container">
-                <div class="calendar-icon">📅</div>
-                <div class="year-display">2025</div>
-                <h1 class="title">Year-End Running Summary</h1>
-                <p class="subtitle">
-                    Celebrate your 2025 running journey with personalized insights,<br>
-                    AI-powered analysis, and shareable achievements
-                </p>
-                
-                <a href="/login" class="login-btn">
-                    🏃‍♂️ Connect with Strava
-                </a>
-                
-                <div class="features">
-                    <div class="feature">📊 Detailed Statistics & Analytics</div>
-                    <div class="feature">🤖 AI-Powered Insights</div>
-                    <div class="feature">📱 Social Media Ready</div>
-                    <div class="feature">🎯 Goal Tracking</div>
-                    <div class="feature">🏆 Achievement Badges</div>
-                </div>
-            </div>
-        </body>
-        </html>
-        '''
+        logger.info("User not authenticated, showing login page")
+        auth_url = build_authorization_url()
+        return render_template('index.html', auth_url=auth_url)
 
 @app.route('/login')
 def login():
+    """Redirect to Strava OAuth authorization."""
     logger.info("Login route accessed")
-    logger.info(f"CLIENT_ID present: {bool(CLIENT_ID)}")
-    logger.info(f"REDIRECT_URI = {REDIRECT_URI}")
-    ##auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read_all,profile:read_all&approval_prompt=force'
-    auth_url = f'https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=read,activity:read&approval_prompt=force'
-    logger.debug(f"Full auth URL = {auth_url}")
-    logger.info("Redirecting to Strava OAuth...")
+    auth_url = build_authorization_url()
     return redirect(auth_url)
-
-@app.route('/test')
-def test():
-    return "Test route is working!"
 
 @app.route('/callback')
 def callback():
-    logger.info("Callback route accessed")
-    logger.debug(f"Request args: {dict(request.args)}")
+    """Handle OAuth callback from Strava."""
+    error = request.args.get('error')
+    if error:
+        return f'<h1>Authorization Error</h1><p>{request.args.get("error_description")}</p>'
     
     code = request.args.get('code')
-    error = request.args.get('error')
-    
-    if error:
-        logger.error(f"OAuth error: {error}")
-        return f'<h1>OAuth Error</h1><p>Error: {error}</p><p><a href="/">Back to home</a></p>'
-    
     if not code:
-        logger.error("No authorization code received")
-        return '<h1>Error</h1><p>No authorization code received</p><p><a href="/">Back to home</a></p>'
+        return '<h1>Error</h1><p>No authorization code provided</p>'
     
-    logger.info(f"Received authorization code: {code[:10]}...")
-    
-    token_data = {
+    # Exchange code for token
+    token_url = 'https://www.strava.com/oauth/token'
+    data = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
         'code': code,
         'grant_type': 'authorization_code'
     }
     
-    logger.info("Requesting access token...")
-    response = requests.post('https://www.strava.com/oauth/token', data=token_data)
-    
-    logger.info(f"Token response status: {response.status_code}")
-    logger.debug(f"Token response: {response.text[:200]}...")
-    
-    if response.status_code != 200:
-        logger.error("Token exchange failed")
-        return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p><p><a href="/">Back to home</a></p>'
-    
-    token_response = response.json()
-    session['access_token'] = token_response['access_token']
-    session['refresh_token'] = token_response.get('refresh_token')
-    session['token_expires_at'] = time.time() + token_response.get('expires_in', 21600)  # Default 6 hours
-    session['athlete_info'] = token_response.get('athlete', {})
-    
-    logger.info("Successfully obtained access token")
-    logger.info(f"Token expires at: {datetime.fromtimestamp(session['token_expires_at'])}")
-    logger.info(f"Refresh token available: {'Yes' if session.get('refresh_token') else 'No'}")
-    logger.info(f"Athlete info: {session['athlete_info'].get('firstname', 'Unknown')} {session['athlete_info'].get('lastname', '')}")
-    
-    return redirect('/')
+    try:
+        response = requests.post(token_url, data=data)
+        if response.status_code != 200:
+            logger.error(f"Failed to exchange code for token: {response.status_code} - {response.text}")
+            return f'<h1>Error</h1><p>Failed to exchange code for token: {response.text}</p>'
+        
+        token_response = response.json()
+        athlete_info = token_response.get('athlete', {})
+        
+        # Store only essential data in session
+        session.update({
+            'access_token': token_response['access_token'],
+            'refresh_token': token_response.get('refresh_token'),
+            'token_expires_at': time.time() + token_response.get('expires_in', 21600),
+            'athlete_info': {
+                'id': athlete_info.get('id'),
+                'firstname': athlete_info.get('firstname', 'Runner'),
+                'lastname': athlete_info.get('lastname', ''),
+                'profile_medium': athlete_info.get('profile_medium', '')
+            }
+        })
+        
+        logger.info(f"User {athlete_info.get('firstname')} {athlete_info.get('lastname')} logged in successfully")
+        return redirect('/stats')
+        
+    except Exception as e:
+        logger.error(f"Error in callback: {str(e)}")
+        return f'<h1>Error</h1><p>An error occurred during authentication: {str(e)}</p>'
 
-@app.route('/callback/')
-def callback_with_slash():
-    logger.info("Callback with slash route accessed")
-    return "Callback with slash works!"
-
-@app.route('/logout')
-def logout():
-    logger.info("User logging out, clearing session")
-    session.clear()
-    return '<h1>Logged Out</h1><p><a href="/login">Login again</a></p>'
-
-@app.route('/token-status')
-def token_status():
-    """Route to check current token status (for debugging)"""
+@app.route('/stats')
+def stats():
+    """Show the main stats dashboard."""
     if 'access_token' not in session:
-        return '<h1>No Token</h1><p>No access token in session. <a href="/login">Login</a></p>'
+        return redirect('/')
     
-    expires_at = session.get('token_expires_at', 0)
-    time_remaining = expires_at - time.time()
-    refresh_available = 'Yes' if session.get('refresh_token') else 'No'
+    # Get activities and process them
+    activities = get_all_activities()
+    if activities is None:
+        return '<h1>Error</h1><p>Failed to fetch activities</p>'
     
-    status_html = f"""
-    <h1>Token Status</h1>
-    <p><strong>Access Token:</strong> Available</p>
-    <p><strong>Expires At:</strong> {datetime.fromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')}</p>
-    <p><strong>Time Remaining:</strong> {int(time_remaining // 60)} minutes {int(time_remaining % 60)} seconds</p>
-    <p><strong>Refresh Token Available:</strong> {refresh_available}</p>
-    <p><strong>Athlete:</strong> {session.get('athlete_info', {}).get('firstname', 'Unknown')} {session.get('athlete_info', {}).get('lastname', '')}</p>
-    <p><a href="/">Back to Stats</a> | <a href="/logout">Logout</a></p>
-    """
+    # Process activities for the current year
+    current_year = datetime.now().year
+    runs = [
+        clean_activity_data(a) 
+        for a in activities 
+        if a.get('type') == 'Run' and str(current_year) in a.get('start_date', '')
+    ]
+    runs = [r for r in runs if r is not None]
     
-    return status_html
+    # Calculate stats
+    total_distance = round(sum(r.get('m', 0) / 1000 for r in runs), 1)  # Convert to km
+    total_time = round(sum(r.get('e', 0) / 3600 for r in runs), 1)  # Convert to hours
+    
+    # Get athlete info
+    athlete = session.get('athlete_info', {})
+    athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
+    
+    return render_template('stats.html',
+                         athlete_name=athlete_name,
+                         total_runs=len(runs),
+                         total_distance=total_distance,
+                         total_time=total_time,
+                         year=current_year)
 
-@app.route('/analyze')
-def analyze():
-    """Route to analyze data with ChatGPT"""
-    logger.info("Analyze route accessed")
+@app.route('/generate-grok-poster', methods=['POST'])
+def generate_grok_poster_route():
+    """API endpoint to generate a poster using xAI Grok model."""
+    if 'access_token' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
     try:
-        if 'access_token' not in session:
-            logger.warning("No access token in session, redirecting to login")
-            return redirect('/login')
-        
-        logger.info("User has access token, proceeding with analysis")
+        current_year = datetime.now().year
         athlete = session.get('athlete_info', {})
-        athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
-        logger.info(f"Analyzing data for athlete: {athlete_name}")
+        athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
         
-        logger.info("Fetching activities for analysis")
+        # Fetch activities
         activities = get_all_activities()
-        if activities is None:
-            logger.error("Failed to fetch activities due to authentication error")
-            return redirect('/login')
-        logger.info(f"Fetched {len(activities)} total activities for analysis")
+        if not activities:
+            return jsonify({'error': 'No activities found'}), 404
         
-        logger.info("Calling ChatGPT API for analysis")
-        analysis = analyze_with_chatgpt(activities, athlete_name)
-        logger.info("ChatGPT analysis completed")
+        # Filter runs for current year
+        runs = [
+            clean_activity_data(a) 
+            for a in activities 
+            if a.get('type') == 'Run' and str(current_year) in a.get('start_date', '')
+        ]
+        runs = [r for r in runs if r is not None]
         
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>ChatGPT Analysis</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .analysis {{ background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                .back-btn {{ background: #007bff; color: white; padding: 10px; text-decoration: none; border-radius: 4px; }}
-            </style>
-        </head>
-        <body>
-            <h1>ChatGPT Running Analysis for {athlete_name}</h1>
-            <a href="/" class="back-btn">← Back to Stats</a>
-            
-            <div class="analysis">
-                <h2>AI Coach Insights</h2>
-                <pre style="white-space: pre-wrap; font-family: Arial;">{analysis}</pre>
-            </div>
-            
-            <p><a href="/" class="back-btn">← Back to Stats</a></p>
-        </body>
-        </html>
-        """
-    except Exception as e:
-        logger.error(f"Error in analyze route: {str(e)}")
-        return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/">Back to stats</a></p>'
-
-def get_stats_page():
-    logger.info("get_stats_page called")
-    try:
-        # Get token from session
-        if 'access_token' not in session:
-            logger.warning("No access token in session, redirecting to login")
-            return redirect('/login')
+        if not runs:
+            return jsonify({'error': f'No runs found for {current_year}'}), 404
         
-        logger.info("User has access token, fetching stats")
-        athlete = session.get('athlete_info', {})
-        athlete_name = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
-        logger.info(f"Generating stats page for athlete: {athlete_name}")
-        logger.debug(f"athlete_name type: {type(athlete_name)}, value: {repr(athlete_name)}")
+        # Generate poster HTML using xAI Grok
+        poster_html = generate_grok_poster(runs, athlete_name)
+        if not poster_html:
+            return jsonify({'error': 'Failed to generate poster'}), 500
         
-        # Check if we should force refresh the activities
-        force_refresh = request.args.get('force_refresh', '').lower() == 'true'
-        current_year = datetime.now().year
+        # Calculate stats for the response
+        total_distance = round(sum(r.get('m', 0) / 1000 for r in runs), 1)
+        total_time = round(sum(r.get('e', 0) / 3600 for r in runs), 1)
         
-        # Check if we have current year's runs in session
-        runs_2025 = None
-        if not force_refresh and 'runs_2025' in session:
-            try:
-                runs_2025 = json.loads(session['runs_2025'])
-                logger.info(f"Using {len(runs_2025)} runs from {current_year} from session")
-            except Exception as e:
-                logger.warning(f"Error loading runs from session: {e}")
-        
-        # If not in session or force refresh, fetch from Strava
-        if not runs_2025 or force_refresh:
-            logger.info(f"Fetching activities from Strava API for {current_year}")
-            activities = get_all_activities()
-            if activities is not None:
-                # Filter and clean only the runs for current year
-                runs_2025 = [clean_activity_data(a) for a in activities 
-                            if a.get('type') == 'Run' and 
-                            str(current_year) in a.get('start_date', '')]
-                runs_2025 = [r for r in runs_2025 if r is not None]  # Remove any None values
-                
-                # Store in session for future use (serialize to JSON)
-                session['runs_2025'] = json.dumps(runs_2025)
-                logger.info(f"Stored {len(runs_2025)} runs from {current_year} in session")
-        
-        if activities is None:
-            logger.error("Failed to fetch activities due to authentication error")
-            return redirect('/login')
-            
-        logger.info(f"Processing {len(activities)} total activities")
-        
-        # Filter for runs from the current year
-        current_year = datetime.now().year
-        logger.info(f"Filtering for {current_year} runs")
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith(str(current_year))]
-        logger.info(f"Found {len(runs_2025)} runs from {current_year}")
-        
-        # Sort by date (newest first)
-        runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
-        logger.info("Sorted runs by date (newest first)")
-        
-        # Store runs in session for poster generation
-        try:
-            session['runs_2025_json'] = json.dumps(runs_2025)
-            logger.debug('Stored runs_2025_json in session for poster rendering')
-        except Exception as e:
-            logger.warning(f'Could not store runs_2025_json in session: {e}')
-        
-        # Create table rows for 2025 runs only - display all runs
-        logger.info("Creating table rows for display")
-        table_rows = ""
-        max_runs = len(runs_2025)  # Display all runs
-        logger.info(f"Will display all {max_runs} runs")
-        
-        error_count = 0
-        for i, run in enumerate(runs_2025[:max_runs]):
-            try:
-                # Convert UTC to IST for display
-                utc_date_str = run.get('start_date', 'N/A')
-                if utc_date_str and utc_date_str != 'N/A':
-                    utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
-                    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                    date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
-                else:
-                    date = 'N/A'
-                
-                name = run.get('name', 'Unknown Activity')
-                distance = round(float(run.get('distance', 0)) / 1000, 2)  # Convert to km
-                time_sec = int(run.get('moving_time', 0))
-                
-                # Simple time formatting
-                if time_sec > 0:
-                    hours = time_sec // 3600
-                    minutes = (time_sec % 3600) // 60
-                    seconds = time_sec % 60
-                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    time_str = "00:00:00"
-                
-                # Simple pace calculation
-                if distance > 0:
-                    pace_min_per_km = time_sec / 60 / distance
-                    pace_min = int(pace_min_per_km)
-                    pace_sec = int((pace_min_per_km - pace_min) * 60)
-                    pace_str = f"{pace_min}:{pace_sec:02d}"
-                else:
-                    pace_str = "N/A"
-                
-                table_rows += f"<tr><td class='date-cell'>{date}</td><td class='activity-cell' title='{name}'>{name}</td><td class='distance-cell'>{distance}</td><td class='time-cell'>{time_str}</td><td class='pace-cell'>{pace_str}</td></tr>"
-            except Exception as e:
-                # Skip problematic rows but continue
-                logger.error(f"Error processing run {i}: {str(e)}")
-                error_count += 1
-                table_rows += f"<tr><td>Error</td><td>Error in data</td><td>-</td><td>-</td><td>-</td></tr>"
-                continue
-        
-        logger.info(f"Table generation completed with {error_count} errors")
-        
-        # Ensure athlete_name is a clean string for template
-        athlete_name_display = str(athlete_name).strip()
-        logger.debug(f"athlete_name_display: {repr(athlete_name_display)}")
-        
-        # Pre-calculate template variables to avoid function call issues
-        total_activities_count = len(activities)
-        runs_2025_count = len(runs_2025)
-        other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
-        current_year = datetime.now().year
-        display_info = f'<p><em>Displaying all {runs_2025_count} runs from {current_year}</em></p>'
-
-        # Pre-generate CSV data for JavaScript
-        csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
-        for run in runs_2025[:max_runs]:
-            try:
-                # Convert UTC to IST for CSV
-                utc_date_str = run.get('start_date', 'N/A')
-                if utc_date_str and utc_date_str != 'N/A':
-                    utc_dt = datetime.fromisoformat(utc_date_str.replace('Z', '+00:00'))
-                    ist_dt = utc_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                    date = ist_dt.strftime('%Y-%m-%d %H:%M IST')
-                else:
-                    date = 'N/A'
-                
-                name = run.get('name', 'Unknown Activity').replace(',', ';')  # Replace commas to avoid CSV issues
-                distance = round(float(run.get('distance', 0)) / 1000, 2)
-                time_sec = int(run.get('moving_time', 0))
-                
-                if time_sec > 0:
-                    hours = time_sec // 3600
-                    minutes = (time_sec % 3600) // 60
-                    seconds = time_sec % 60
-                    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    time_str = "00:00:00"
-                
-                if distance > 0:
-                    pace_min_per_km = time_sec / 60 / distance
-                    pace_min = int(pace_min_per_km)
-                    pace_sec = int((pace_min_per_km - pace_min) * 60)
-                    pace_str = f"{pace_min}:{pace_sec:02d}"
-                else:
-                    pace_str = "N/A"
-                
-                csv_data += f"{date},{name},{distance},{time_str},{pace_str}\\n"
-            except Exception as e:
-                continue
-        
-        logger.debug(f"Template vars - total_activities: {total_activities_count}, runs_2025: {runs_2025_count}, other: {other_activities_count}")
-        logger.debug(f"Generated CSV data with {len(csv_data.split(chr(10)))} lines")
-        
-        html_content = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Your 2025 Year-End Running Summary for Strava</title>
-            <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                
-                body {{ 
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }}
-                
-                .container {{ 
-                    max-width: 1400px; 
-                    margin: 0 auto; 
-                    background: rgba(255, 255, 255, 0.95);
-                    border-radius: 20px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }}
-                
-                .header {{ 
-                    background: linear-gradient(135deg, #FC4C02 0%, #ff6b35 100%);
-                    color: white;
-                    padding: 30px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    flex-wrap: wrap;
-                    gap: 20px;
-                }}
-                
-                .title {{ 
-                    font-size: 2.5rem; 
-                    font-weight: 700;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-                }}
-                
-                .stats {{ 
-                    background: rgba(255,255,255,0.1);
-                    padding: 20px;
-                    border-radius: 15px;
-                    backdrop-filter: blur(10px);
-                }}
-                
-                .stats p {{ 
-                    margin: 8px 0; 
-                    font-size: 1.1rem;
-                    font-weight: 500;
-                }}
-                
-                .button-container {{ 
-                    padding: 30px;
-                    background: #f8f9fa;
-                    display: flex;
-                    gap: 15px;
-                    flex-wrap: wrap;
-                    justify-content: center;
-                }}
-                
-                .copy-btn {{ 
-                    background: linear-gradient(135deg, #4CAF50, #45a049);
-                    color: white; 
-                    padding: 15px 25px; 
-                    border: none; 
-                    border-radius: 10px;
-                    cursor: pointer; 
-                    font-weight: 600;
-                    font-size: 1rem;
-                    transition: all 0.3s ease;
-                    box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
-                }}
-                
-                .copy-btn:hover {{ 
-                    transform: translateY(-2px);
-                    box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
-                    background: linear-gradient(135deg, #45a049, #4CAF50);
-                }}
-                
-                .table-container {{ 
-                    padding: 30px;
-                    background: white;
-                    overflow-x: auto;
-                    max-height: 70vh;  /* 70% of viewport height */
-                    overflow-y: auto;
-                    position: relative;
-                    border-radius: 15px;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
-                }}
-                
-                /* Custom scrollbar for the table container */
-                .table-container::-webkit-scrollbar {{
-                    width: 8px;
-                    height: 8px;
-                }}
-                .table-container::-webkit-scrollbar-track {{
-                    background: #f1f1f1;
-                    border-radius: 0 0 15px 15px;
-                }}
-                .table-container::-webkit-scrollbar-thumb {{
-                    background: #888;
-                    border-radius: 4px;
-                }}
-                .table-container::-webkit-scrollbar-thumb:hover {{
-                    background: #555;
-                }}
-                
-                table {{ 
-                    width: 100%; 
-                    border-collapse: separate;
-                    border-spacing: 0;
-                    background: white;
-                    border-radius: 15px;
-                    overflow: hidden;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
-                }}
-                
-                th {{ 
-                    background: linear-gradient(135deg, #2c3e50, #34495e);
-                    color: white;
-                    padding: 20px 15px;
-                    text-align: left;
-                    font-weight: 600;
-                    font-size: 0.95rem;
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                    position: sticky;
-                    top: 0;
-                    z-index: 10;
-                }}
-                
-                /* Ensure table header has a solid background when scrolling */
-                thead th {{
-                    position: sticky;
-                    top: 0;
-                    z-index: 20;
-                    background: #2c3e50;  /* Fallback solid color */
-                    background: linear-gradient(135deg, #2c3e50, #34495e);
-                }}
-                
-                td {{ 
-                    padding: 18px 15px;
-                    border-bottom: 1px solid #f1f3f4;
-                    font-size: 0.95rem;
-                    transition: all 0.2s ease;
-                }}
-                
-                tr:hover td {{ 
-                    background: #f8f9fa;
-                    transform: scale(1.01);
-                }}
-                
-                tr:hover td:first-child {{ 
-                    border-radius: 10px 0 0 10px;
-                }}
-                
-                tr:hover td:last-child {{ 
-                    border-radius: 0 10px 10px 0;
-                }}
-                
-                tbody tr {{ 
-                    transition: all 0.3s ease;
-                    cursor: pointer;
-                }}
-                
-                tbody tr:hover {{ 
-                    background: linear-gradient(90deg, #f8f9fa, #ffffff);
-                    box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-                    transform: translateY(-1px);
-                    position: relative;
-                    z-index: 5;
-                }}
-                
-                .date-cell {{ 
-                    font-weight: 600;
-                    color: #2c3e50;
-                    font-family: 'Courier New', monospace;
-                }}
-                
-                .activity-cell {{ 
-                    font-weight: 500;
-                    color: #34495e;
-                    max-width: 300px;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    white-space: nowrap;
-                }}
-                
-                .distance-cell {{ 
-                    font-weight: 700;
-                    color: #27ae60;
-                    text-align: center;
-                }}
-                
-                .time-cell {{ 
-                    font-weight: 600;
-                    color: #2980b9;
-                    text-align: center;
-                    font-family: 'Courier New', monospace;
-                }}
-                
-                .pace-cell {{ 
-                    font-weight: 700;
-                    color: #e74c3c;
-                    text-align: center;
-                    font-family: 'Courier New', monospace;
-                }}
-                
-                @media (max-width: 768px) {{
-                    .header {{ flex-direction: column; text-align: center; }}
-                    .title {{ font-size: 2rem; }}
-                    .button-container {{ flex-direction: column; align-items: center; }}
-                    .copy-btn {{ width: 100%; max-width: 300px; }}
-                    table {{ font-size: 0.85rem; }}
-                    th, td {{ padding: 12px 8px; }}
-                }}
-                
-                .loading {{ 
-                    display: none;
-                    text-align: center;
-                    padding: 20px;
-                    color: #666;
-                }}
-                
-                .spinner {{ 
-                    border: 3px solid #f3f3f3;
-                    border-top: 3px solid #FC4C02;
-                    border-radius: 50%;
-                    width: 30px;
-                    height: 30px;
-                    animation: spin 1s linear infinite;
-                    margin: 0 auto 10px;
-                }}
-                
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <div>
-                        <h1 class="title">{athlete_name_display}'s Year-End Running Summary - 2025</h1>
-                        <div class="stats">
-                            <p><strong>Total Activities (All Time):</strong> {total_activities_count}</p>
-                            <p><strong>2025 Runs:</strong> {runs_2025_count}</p>
-                            <p><strong>Other Activities:</strong> {other_activities_count}</p>
-                            {display_info}
-                        </div>
-                    </div>
-                    <div>
-                        <a href="/poster" style="color: white; text-decoration: none; font-weight: 600; margin-right:12px;">View Poster</a>
-                        <a href="/logout" style="color: white; text-decoration: none; font-weight: 600;">Logout</a>
-                    </div>
-                </div>
-                
-                <div class="button-container">
-                    <button class="copy-btn" onclick="copyTableData()">Copy 2025 Running Data for ChatGPT</button>
-                    <button class="copy-btn" onclick="copyWithPrompts()">Copy Data with Analysis Prompts</button>
-                    <button class="copy-btn" onclick="copyPosterPrompt()">Copy Poster Creation Prompt</button>
-                    <button class="copy-btn" onclick="window.open('/poster', '_blank')">Open Poster</button>
-                </div>
-                
-                <div class="table-container">
-                    <div class="loading" id="loading">
-                        <div class="spinner"></div>
-                        <p>Loading activities...</p>
-                    </div>
-                    <table id="activityTable">
-                        <thead>
-                            <tr><th>Date & Time (IST)</th><th>Activity Name</th><th>Distance (km)</th><th>Duration</th><th>Pace (min/km)</th></tr>
-                        </thead>
-                        <tbody>
-                            {table_rows}
-                        </tbody>
-                    </table>
-                </div>
-                </div>
-
-
-            <script>
-                // Add interactive features
-                document.addEventListener('DOMContentLoaded', function() {{
-                    // Hide loading spinner
-                    document.getElementById('loading').style.display = 'none';
-                    
-                    // Add click handlers to table rows
-                    const rows = document.querySelectorAll('tbody tr');
-                    rows.forEach(row => {{
-                        row.addEventListener('click', function() {{
-                            // Highlight selected row
-                            rows.forEach(r => r.style.background = '');
-                            this.style.background = 'linear-gradient(90deg, #e3f2fd, #ffffff)';
-                        }});
-                    }});
-                    
-                    // Add button hover effects
-                    const buttons = document.querySelectorAll('.copy-btn');
-                    buttons.forEach(btn => {{
-                        btn.addEventListener('mouseenter', function() {{
-                            this.style.transform = 'translateY(-2px) scale(1.05)';
-                        }});
-                        btn.addEventListener('mouseleave', function() {{
-                            this.style.transform = 'translateY(0) scale(1)';
-                        }});
-                    }});
-                }});
-                
-                function copyTableData() {{
-                    const table = document.getElementById('activityTable');
-                    const rows = table.getElementsByTagName('tr');
-                    let data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n';
-                    
-                    for (let i = 1; i < rows.length; i++) {{
-                        const cells = rows[i].getElementsByTagName('td');
-                        const rowData = [];
-                        for (let j = 0; j < cells.length; j++) {{
-                            rowData.push(cells[j].innerText);
-                        }}
-                        data += rowData.join(',') + '\\n';
-                    }}
-                    
-                    navigator.clipboard.writeText(data).then(function() {{
-                        alert('2025 running data copied to clipboard! You can now paste this into ChatGPT for poster generation.');
-                    }});
-                }}
-                
-                function copyWithPrompts() {{
-                    const csvData = `{csv_data}`;
-                    
-                    const prompts = `
-                    
-=== CHATGPT PROMPTS FOR STRAVA DATA ANALYSIS ===
-
-PROMPT 1: Basic Analysis
-"Analyze this running data and provide insights on:
-1. Performance trends and improvements
-2. Training consistency patterns  
-3. Goal achievement status
-4. Recommendations for future training
-
-Data:
-${{csvData}}"
-
-PROMPT 2: Visual Poster Creation
-"Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
-- Total distance and time statistics
-- Monthly breakdowns with progress indicators
-- Fastest/longest run highlights
-- Consistency streaks and patterns
-- Fun personality insights (early bird vs night owl)
-- Motivational summary
-
-Use emojis, creative formatting, and make it shareable!
-
-Data:
-${{csvData}}"
-
-PROMPT 3: Detailed Coaching Analysis
-"Act as a professional running coach and analyze this data comprehensively:
-1. Pace analysis and efficiency trends
-2. Weekly/monthly volume patterns
-3. Recovery and injury risk assessment
-4. Specific workout recommendations
-5. Long-term development plan
-
-Provide actionable advice with specific metrics.
-
-Data:
-${{csvData}}"
-
-PROMPT 4: Social Media Summary
-"Create engaging social media captions for different platforms about this running journey:
-- Instagram post with stats and achievements
-- Twitter summary with key highlights
-- Facebook story about progress
-- LinkedIn professional development angle
-
-Make it inspiring and shareable!
-
-Data:
-${{csvData}}"
-`;
-                    
-                    navigator.clipboard.writeText(prompts.trim()).then(function() {{
-                        alert('Data and analysis prompts copied! You now have 4 ready-to-use prompts for ChatGPT along with your running data.');
-                    }});
-                }}
-                
-                function copyPosterPrompt() {{
-                    const csvData = `{csv_data}`;
-                    
-                    const posterPrompt = `Create a visually appealing text-based poster/infographic from this running data in a Spotify Wrapped style. Include:
-- Total distance and time statistics
-- Monthly breakdowns with progress indicators
-- Fastest/longest run highlights
-- Consistency streaks and patterns
-- Fun personality insights (early bird vs night owl)
-- Motivational summary
-
-Use emojis, creative formatting, and make it shareable!
-
-Data:
-${{csvData}}`;
-                    
-                    navigator.clipboard.writeText(posterPrompt.trim()).then(function() {{
-                        alert('Poster creation prompt copied! You can now paste this into ChatGPT to create your visual running summary.');
-                    }});
-                }}
-
-
-            </script>
-        </body>
-        </html>
-        """.format(
-            athlete_name_display=athlete_name_display,
-            total_activities_count=total_activities_count,
-            runs_2025_count=runs_2025_count,
-            other_activities_count=other_activities_count,
-            display_info=display_info,
-            csv_data=csv_data,
-            activities=activities,
-            runs_2025=runs_2025,
-            table_rows=table_rows
-        )
-        
-        return html_content
+        return jsonify({
+            'success': True,
+            'poster_html': poster_html,
+            'stats': {
+                'athlete_name': athlete_name,
+                'total_runs': len(runs),
+                'total_distance_km': total_distance,
+                'total_time_hours': total_time,
+                'year': current_year
+            }
+        })
         
     except Exception as e:
-        logger.error(f"Error in get_stats_page: {str(e)}")
-        return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
-
-
-
-
-
-
-
+        logger.error(f"Error in generate_grok_poster_route: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
 
 def generate_grok_poster(activities, athlete_name):
     """Generate a poster using xAI Grok model with running stats."""
-    logger.info(f"Generating poster with xAI Grok for {athlete_name} with {len(activities)} activities")
-    
     if not XAI_API_KEY:
-        logger.error("XAI_API_KEY not set")
+        logger.error("XAI_API_KEY not configured")
         return None
-
+    
     try:
-        # Prepare activity summary
-        total_distance = sum(act.get('distance', 0) for act in activities) / 1000  # Convert to km
-        total_time = sum(act.get('elapsed_time', 0) for act in activities) / 3600  # Convert to hours
-        avg_speed = sum(act.get('average_speed', 0) for act in activities) / len(activities) if activities else 0
-        avg_pace = 1000 / (avg_speed * 16.6667) if avg_speed > 0 else 0  # Convert m/s to min/km
-        
-        # Get monthly stats
-        monthly_stats = {}
-        for act in activities:
-            try:
-                month = datetime.strptime(act['start_date'].split('T')[0], '%Y-%m-%d').strftime('%B')
-                monthly_stats[month] = monthly_stats.get(month, 0) + (act.get('distance', 0) / 1000)  # km
-            except (KeyError, ValueError):
-                continue
-        
-        # Format prompt for xAI Grok
+        # Prepare the prompt with activity data
         prompt = f"""
-        Create a motivational running poster for {athlete_name} for {datetime.now().year} with the following stats:
+        Create an HTML+CSS poster for a runner's year in review with the following details:
+        
+        - Athlete: {athlete_name}
         - Total Runs: {len(activities)}
-        - Total Distance: {total_distance:.1f} km
-        - Total Time: {total_time:.1f} hours
-        - Average Pace: {avg_pace:.2f} min/km
-        - Monthly Stats: {json.dumps(monthly_stats, indent=2)}
+        - Total Distance: {sum(a.get('m', 0) / 1000 for a in activities):.1f} km
+        - Total Time: {sum(a.get('e', 0) / 3600 for a in activities):.1f} hours
         
-        The poster should be:
-        1. Visually appealing with a sports/running theme
-        2. Include motivational elements
-        3. Use a clean, modern design
-        4. Highlight key achievements
-        5. Be suitable for sharing on social media
+        The poster should be visually appealing and include:
+        1. A creative title
+        2. Key statistics
+        3. A motivational message
+        4. A clean, modern design
         
-        Return the poster as an HTML+CSS design that can be rendered in a web browser.
+        Return only the HTML+CSS, no markdown or code block formatting.
         """
         
-        # Prepare headers and payload for xAI Grok API
         headers = {
-            "Content-Type": "application/json",
             "Authorization": f"Bearer {XAI_API_KEY}",
-            "Accept": "application/json"
+            "Content-Type": "application/json"
         }
         
         payload = {
-            "model": "grok-4-latest",
+            "model": "grok-1",
             "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a creative designer who creates beautiful, responsive HTML+CSS posters for runners."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": "You are a helpful assistant that creates beautiful HTML+CSS posters for runners."},
+                {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
-            "max_tokens": 4000,
-            "stream": False
+            "max_tokens": 2000
         }
         
-        # Call xAI Grok API
-        response = requests.post(
-            XAI_API_URL,
-            headers=headers,
-            json=payload,
-            timeout=60  # 60 seconds timeout
-        )
+        response = requests.post(XAI_API_URL, headers=headers, json=payload)
+        response.raise_for_status()
         
-        if response.status_code != 200:
-            logger.error(f"xAI API error: {response.status_code} - {response.text}")
-            return None
-            
-        response_data = response.json()
-        poster_html = response_data['choices'][0]['message']['content']
+        result = response.json()
+        poster_html = result['choices'][0]['message']['content']
         
-        # Clean up the response to ensure it's valid HTML
+        # Clean up the response if it's wrapped in markdown code blocks
         if '```html' in poster_html:
             poster_html = poster_html.split('```html')[1].split('```')[0].strip()
         elif '```' in poster_html:
-            poster_html = poster_html.split('```')[1].split('```')[0].strip()
+            poster_html = poster_html.split('```')[1].strip()
         
         return poster_html
         
@@ -1502,189 +359,13 @@ def generate_grok_poster(activities, athlete_name):
         logger.error(f"Error generating xAI Grok poster: {str(e)}")
         return None
 
-@app.route('/generate-grok-poster', methods=['POST'])
-def generate_grok_poster_route():
-    """API endpoint to generate a poster using xAI Grok model."""
-    logger.info("=== /generate-grok-poster endpoint called ===")
-    logger.info(f"Request headers: {dict(request.headers)}")
-    
-    if 'access_token' not in session:
-        logger.warning("Authentication failed: No access token in session")
-        logger.info(f"Session data: {dict(session)}")
-        return jsonify({'error': 'Not authenticated'}), 401
-    
-    try:
-        logger.info("=== Starting poster generation ===")
-        current_year = datetime.now().year
-        logger.info(f"Current year: {current_year}")
-        
-        athlete = session.get('athlete_info', {})
-        logger.info(f"Athlete info from session: {athlete}")
-        
-        athlete_name = f"{athlete.get('firstname', 'Runner')} {athlete.get('lastname', '')}".strip()
-        logger.info(f"Processing poster for athlete: {athlete_name}")
-        
-        # Check if xAI API key is configured
-        if not XAI_API_KEY:
-            logger.error("XAI_API_KEY not configured in environment")
-            logger.error(f"Environment keys: {', '.join(os.environ.keys())}")
-            return jsonify({'error': 'xAI API key not configured'}), 500
-        
-        # Fetch fresh activities
-        logger.info("Fetching activities...")
-        activities = get_all_activities()
-        logger.info(f"Retrieved {len(activities) if activities else 0} activities")
-        
-        if not activities:
-            logger.warning("No activities found for the user")
-            return jsonify({'error': 'No activities found'}), 404
-        
-        # Filter runs for current year
-        logger.info(f"Filtering runs for year {current_year}...")
-        runs = []
-        for a in activities:
-            activity_type = a.get('type')
-            start_date = a.get('start_date', '')
-            logger.debug(f"Activity: type={activity_type}, date={start_date}")
-            if activity_type == 'Run' and str(current_year) in start_date:
-                cleaned = clean_activity_data(a)
-                if cleaned is not None:
-                    runs.append(cleaned)
-        
-        logger.info(f"Found {len(runs)} runs for {current_year}")
-        if not runs:
-            logger.warning(f"No runs found for year {current_year}")
-            return jsonify({'error': f'No runs found for {current_year}'}), 404
-        
-        # Generate poster using xAI Grok
-        logger.info(f"Initiating poster generation for {athlete_name} with {len(runs)} runs")
-        try:
-            poster_html = generate_grok_poster(runs, athlete_name)
-            logger.info("Poster generation completed")
-            
-            if not poster_html:
-                logger.error("Poster generation failed: Empty response from generate_grok_poster")
-                return jsonify({'error': 'Failed to generate poster (empty response)'}), 500
-                
-        except Exception as e:
-            logger.error(f"Error in generate_grok_poster: {str(e)}", exc_info=True)
-            return jsonify({'error': f'Error generating poster: {str(e)}'}), 500
-        
-        # Calculate stats for the response
-        logger.info("Calculating run statistics...")
-        total_distance = round(sum(r.get('distance', 0) / 1000 for r in runs), 1)
-        total_time = round(sum(r.get('elapsed_time', 0) for r in runs) / 3600, 1)
-        
-        stats = {
-            'athlete_name': athlete_name,
-            'total_runs': len(runs),
-            'total_distance_km': total_distance,
-            'total_time_hours': total_time,
-            'year': current_year
-        }
-        
-        logger.info(f"Generated stats: {stats}")
-        logger.info("Sending successful response")
-        
-        response_data = {
-            'success': True,
-            'poster_html': poster_html[:100] + '...' if poster_html else 'None',  # Log first 100 chars
-            'stats': stats
-        }
-        
-        logger.info(f"Response data prepared. Stats: {stats}")
-        return jsonify(response_data)
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error in generate_grok_poster_route: {str(e)}")
-        return jsonify({'error': 'Failed to connect to xAI API'}), 503
-    except Exception as e:
-        logger.error(f"Error in generate_grok_poster_route: {str(e)}", exc_info=True)
-        return jsonify({'error': 'Internal server error'}), 500
+@app.route('/logout')
+def logout():
+    """Log out the user by clearing the session."""
+    session.clear()
+    return redirect('/')
 
-@app.route('/')
-def index():
-    """List all available routes."""
-    routes = []
-    for rule in app.url_map.iter_rules():
-        if rule.endpoint != 'static':  # Skip static files
-            methods = ','.join(m for m in rule.methods if m not in ['HEAD', 'OPTIONS'])
-            routes.append({
-                'endpoint': rule.endpoint,
-                'methods': methods,
-                'rule': rule.rule,
-                'doc': app.view_functions[rule.endpoint].__doc__ or 'No docstring'
-            })
-    
-    # Create a simple HTML page with the routes
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Available Routes</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            h1 { color: #333; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-            th { background-color: #f2f2f2; }
-            tr:nth-child(even) { background-color: #f9f9f9; }
-            .method-get { color: #2ecc71; }
-            .method-post { color: #3498db; }
-            .method-put { color: #f39c12; }
-            .method-delete { color: #e74c3c; }
-            .method { font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1>Available Routes</h1>
-        <table>
-            <tr>
-                <th>Endpoint</th>
-                <th>Methods</th>
-                <th>URL Rule</th>
-                <th>Description</th>
-            </tr>
-    """
-    
-    for route in sorted(routes, key=lambda x: x['rule']):
-        method_classes = {
-            'GET': 'method-get',
-            'POST': 'method-post',
-            'PUT': 'method-put',
-            'DELETE': 'method-delete'
-        }
-        
-        methods_html = []
-        for method in route['methods'].split(','):
-            if method in method_classes:
-                methods_html.append(f'<span class="method {method_classes[method]}">{method}</span>')
-            else:
-                methods_html.append(f'<span class="method">{method}</span>')
-        
-        html += f"""
-        <tr>
-            <td><code>{route['endpoint']}</code></td>
-            <td>{' '.join(methods_html)}</td>
-            <td><code>{route['rule']}</code></td>
-            <td>{route['doc']}</td>
-        </tr>
-        """
-    
-    html += """
-        </table>
-        <p style="margin-top: 20px; color: #666;">
-            Note: Make sure to use the correct HTTP method when making requests.
-        </p>
-    </body>
-    </html>
-    """
-    
-    return html
-
+# Run the application
 if __name__ == '__main__':
-    logger.info("Starting Flask app...")
-    logger.info(f"Available routes: {[rule.rule for rule in app.url_map.iter_rules()]}")
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=True)
