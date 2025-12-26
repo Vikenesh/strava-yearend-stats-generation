@@ -198,7 +198,7 @@ def analyze_wrapped_stats(activities):
         'monthly_stats': dict(monthly_stats),
         'fastest_run': {
             'name': fastest_run['name'],
-            'pace': round((fastest_run['moving_time'] / 60) / (fastest_run['distance'] / 1000), 2),
+            'pace': round((fastest_run['elapsed_time'] / 60) / (fastest_run['distance'] / 1000), 2),
             'date': fastest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
             'distance': round(fastest_run['distance'] / 1000, 2)
         },
@@ -206,7 +206,7 @@ def analyze_wrapped_stats(activities):
             'name': longest_run['name'],
             'distance': round(longest_run['distance'] / 1000, 2),
             'date': longest_run['ist_date'].strftime('%d %b %Y, %I:%M %p IST'),
-            'time': longest_run['moving_time'] // 60
+            'time': longest_run['elapsed_time'] // 60
         },
         'early_bird_count': len(early_morning_runs),
         'night_owl_count': len(night_runs),
@@ -419,8 +419,8 @@ def analyze_with_chatgpt(activities, athlete_name):
                 'date': run['start_date'][:10],
                 'name': run['name'],
                 'distance_km': round(run['distance'] / 1000, 2),
-                'time_minutes': run['moving_time'] // 60,
-                'pace_min_per_km': round((run['moving_time'] / 60) / (run['distance'] / 1000), 2)
+                'time_minutes': run['elapsed_time'] // 60,
+                'pace_min_per_km': round((run['elapsed_time'] / 60) / (run['distance'] / 1000), 2)
             })
         
         # Create prompt for ChatGPT
