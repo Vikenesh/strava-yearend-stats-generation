@@ -11,7 +11,15 @@ import io
 import base64
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
-
+import os
+import requests
+import base64
+import json
+import logging
+import tempfile
+import imgkit
+from datetime import datetime, timedelta
+from functools import wraps
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response, render_template
 import requests
 
@@ -486,6 +494,312 @@ def logout():
     """Log out the user by clearing the session."""
     session.clear()
     return redirect('/')
+
+def html_to_image(html_content, output_path=None):
+    """Convert HTML content to an image and return the file path."""
+    try:
+        # Create a temporary file for the HTML
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as f:
+            f.write(html_content.encode('utf-8'))
+            html_path = f.name
+
+        # If no output path is provided, create a temporary file
+        if not output_path:
+            output_path = os.path.join(tempfile.gettempdir(), f"running_poster_{int(datetime.now().timestamp())}.png")
+        
+        # Configure imgkit with options for better quality
+        options = {
+            'format': 'png',
+            'encoding': 'UTF-8',
+            'quality': '100',
+            'width': '900',
+            'disable-javascript': '',
+            'quiet': ''
+        }
+        
+        # Convert HTML to image
+        imgkit.from_file(html_path, output_path, options=options)
+        
+        # Clean up temporary HTML file
+        os.unlink(html_path)
+        
+        return output_path
+    except Exception as e:
+        logger.error(f"Error converting HTML to image: {str(e)}")
+        return None
+
+def get_mock_poster(activities, athlete_name, return_as_image=False):
+    """Generate a beautiful poster with running statistics using HTML/CSS."""
+    # Calculate statistics
+    total_runs = len(activities)
+    total_distance = sum(a.get('m', 0) / 1000 for a in activities)  # Convert to km
+    total_time = sum(a.get('e', 0) / 3600 for a in activities)  # Convert to hours
+    avg_distance = total_distance / total_runs if total_runs > 0 else 0
+    avg_pace = (total_time * 60) / total_distance if total_distance > 0 else 0
+    
+    current_year = datetime.now().year
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{athlete_name}'s {current_year} Running Stats</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
+            
+            :root {{
+                --primary: #4a6fa5;
+                --secondary: #ff6b6b;
+                --accent: #4ecdc4;
+                --dark: #2c3e50;
+                --light: #f8f9fa;
+            }}
+            
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: 'Poppins', sans-serif;
+                background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                min-height: 100vh;
+                padding: 2rem;
+                color: var(--dark);
+                line-height: 1.6;
+            }}
+            
+            .poster {{
+                max-width: 900px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                overflow: hidden;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            }}
+            
+            .header {{
+                background: linear-gradient(135deg, var(--primary) 0%, #2c3e50 100%);
+                color: white;
+                padding: 2.5rem;
+                text-align: center;
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .header h1 {{
+                font-size: 2.5rem;
+                margin-bottom: 0.5rem;
+                font-weight: 700;
+            }}
+            
+            .header p {{
+                font-size: 1.2rem;
+                opacity: 0.9;
+            }}
+            
+            .stats-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 1.5rem;
+                padding: 2.5rem;
+            }}
+            
+            .stat-card {{
+                background: white;
+                border-radius: 15px;
+                padding: 1.5rem;
+                text-align: center;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+                border: 1px solid rgba(0,0,0,0.05);
+            }}
+            
+            .stat-card:hover {{
+                transform: translateY(-5px);
+                box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            }}
+            
+            .stat-value {{
+                font-size: 2.5rem;
+                font-weight: 700;
+                color: var(--primary);
+                margin: 0.5rem 0;
+                line-height: 1.2;
+            }}
+            
+            .stat-label {{
+                color: #666;
+                font-size: 0.95rem;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                font-weight: 600;
+            }}
+            
+            .footer {{
+                text-align: center;
+                padding: 2rem;
+                background: #f8f9fa;
+                border-top: 1px solid #eee;
+                font-size: 0.9rem;
+                color: #666;
+            }}
+            
+            .quote {{
+                font-style: italic;
+                text-align: center;
+                padding: 1.5rem 2.5rem;
+                font-size: 1.1rem;
+                color: #555;
+                border-top: 1px solid #eee;
+                border-bottom: 1px solid #eee;
+                margin: 0 2.5rem;
+                background: #fcfcfc;
+                border-radius: 10px;
+                position: relative;
+                top: -1.5rem;
+                max-width: calc(100% - 5rem);
+                margin: 0 auto;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.02);
+            }}
+            
+            .quote:before {{
+                content: '""';
+                font-size: 4rem;
+                color: var(--accent);
+                opacity: 0.2;
+                position: absolute;
+                top: -1rem;
+                left: 1rem;
+                font-family: serif;
+                line-height: 1;
+            }}
+            
+            .running-icon {{
+                font-size: 2rem;
+                margin-bottom: 1rem;
+                display: inline-block;
+            }}
+            
+            @media (max-width: 768px) {{
+                .stats-grid {{
+                    grid-template-columns: 1fr;
+                    padding: 1.5rem;
+                }}
+                
+                .header h1 {{
+                    font-size: 2rem;
+                }}
+                
+                .quote {{
+                    margin: 0 1rem;
+                    padding: 1rem;
+                    max-width: calc(100% - 2rem);
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="poster">
+            <div class="header">
+                <div class="running-icon">🏃‍♂️</div>
+                <h1>{athlete_name}'s {current_year} Running Journey</h1>
+                <p>Your year in numbers</p>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{total_runs}</div>
+                    <div class="stat-label">Total Runs</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-value">{total_distance:,.1f}<span style="font-size: 1.5rem">km</span></div>
+                    <div class="stat-label">Total Distance</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-value">{total_time:,.1f}<span style="font-size: 1.5rem">hrs</span></div>
+                    <div class="stat-label">Total Time</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-value">{avg_distance:.1f}<span style="font-size: 1.5rem">km</span></div>
+                    <div class="stat-label">Avg. Distance/Run</div>
+                </div>
+            </div>
+            
+            <div class="quote">
+                "The miracle isn't that I finished. The miracle is that I had the courage to start."
+                <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #4ecdc4;">— John Bingham</div>
+            </div>
+            
+            <div class="footer">
+                Generated with ❤️ using Strava Year in Review • {datetime.now().strftime('%B %d, %Y')}
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    if not return_as_image:
+        return html_content
+    
+    try:
+        # Generate the image
+        image_path = html_to_image(html_content)
+        if not image_path or not os.path.exists(image_path):
+            return None, None
+            
+        # Read the image file and convert to base64
+        with open(image_path, 'rb') as img_file:
+            image_data = base64.b64encode(img_file.read()).decode('utf-8')
+            image_data_url = f"data:image/png;base64,{image_data}"
+            
+        return image_data_url, image_path
+    except Exception as e:
+        logger.error(f"Error generating image: {str(e)}")
+        return None, None
+
+@app.route('/download-poster')
+def download_poster():
+    try:
+        if 'activities' not in session:
+            return "No activities found. Please generate a poster first.", 400
+            
+        activities = session['activities']
+        athlete_name = session.get('athlete_name', 'Runner')
+        
+        # Generate the image
+        image_data_url, image_path = get_mock_poster(activities, athlete_name, return_as_image=True)
+        
+        if not image_path or not os.path.exists(image_path):
+            return "Failed to generate poster image.", 500
+            
+        # Clean up the temporary file after sending
+        def cleanup():
+            if os.path.exists(image_path):
+                try:
+                    os.unlink(image_path)
+                except Exception as e:
+                    logger.error(f"Error cleaning up image file: {str(e)}")
+        
+        # Return the image for download
+        response = send_file(
+            image_path,
+            mimetype='image/png',
+            as_attachment=True,
+            download_name=f"{athlete_name}_running_stats_{datetime.now().strftime('%Y%m%d')}.png"
+        )
+        
+        # Set up cleanup after the response is sent
+        response.call_on_close(cleanup)
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in download_poster: {str(e)}")
+        return "An error occurred while generating the poster.", 500
 
 # Run the application
 if __name__ == '__main__':
