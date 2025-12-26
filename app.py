@@ -132,7 +132,8 @@ def analyze_wrapped_stats(activities):
                 'ist_date': run_date,
                 'distance': float(run.get('m', 0)),  # 'm' is distance in meters
                 'elapsed_time': int(run.get('e', 0)),  # 'e' is elapsed time in seconds
-                'speed': float(run.get('s', 0))  # 's' is speed in m/s
+                'speed': float(run.get('s', 0)),  # 's' is speed in m/s
+                'name': run.get('n', 'Run')  # 'n' for name, default to 'Run' if not present
             }
             ist_runs.append(ist_run)
         except (ValueError, KeyError) as e:
