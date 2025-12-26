@@ -356,9 +356,10 @@ def analyze_with_chatgpt(activities, athlete_name):
     """Analyze activities using ChatGPT API"""
     logger.info(f"analyze_with_chatgpt called for {len(activities)} activities")
     try:
-        # Filter for 2025 runs only
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
-        logger.info(f"Processing {len(runs_2025)} runs from 2025")
+        # Filter for current year runs
+        current_year = datetime.now().year
+        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith(str(current_year))]
+        logger.info(f"Processing {len(runs_2025)} runs from {current_year}")
         
         # Prepare data for ChatGPT
         summary = {
@@ -759,28 +760,49 @@ def get_stats_page():
         logger.info(f"Generating stats page for athlete: {athlete_name}")
         logger.debug(f"athlete_name type: {type(athlete_name)}, value: {repr(athlete_name)}")
         
-        logger.info("Fetching all activities")
-        activities = get_all_activities()
+        # Check if we should force refresh the activities
+        force_refresh = request.args.get('force_refresh', '').lower() == 'true'
+        
+        # Get activities data from session or fetch if not available
+        activities = None
+        if not force_refresh and 'activities' in session:
+            try:
+                activities = json.loads(session['activities'])
+                logger.info(f"Using {len(activities)} activities from session")
+            except Exception as e:
+                logger.warning(f"Error loading activities from session: {e}")
+        
+        # If not in session or force refresh, fetch from Strava
+        if not activities or force_refresh:
+            logger.info("Fetching activities from Strava API")
+            activities = get_all_activities()
+            if activities is not None:
+                # Store in session for future use (serialize to JSON)
+                session['activities'] = json.dumps(activities)
+                logger.info(f"Stored {len(activities)} activities in session")
+        
         if activities is None:
             logger.error("Failed to fetch activities due to authentication error")
             return redirect('/login')
-        logger.info(f"Fetched {len(activities)} total activities")
+            
+        logger.info(f"Processing {len(activities)} total activities")
         
-        # Filter for runs only and 2025 only
-        logger.info("Filtering for 2025 runs")
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
-        logger.info(f"Found {len(runs_2025)} runs from 2025")
+        # Filter for runs from the current year
+        current_year = datetime.now().year
+        logger.info(f"Filtering for {current_year} runs")
+        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith(str(current_year))]
+        logger.info(f"Found {len(runs_2025)} runs from {current_year}")
         
         # Sort by date (newest first)
         runs_2025.sort(key=lambda x: x['start_date'], reverse=True)
         logger.info("Sorted runs by date (newest first)")
-
-        # Save raw 2025 runs JSON in session so poster uses exactly the same raw data
+        
+        # Store runs in session for poster generation
         try:
             session['runs_2025_json'] = json.dumps(runs_2025)
             logger.debug('Stored runs_2025_json in session for poster rendering')
         except Exception as e:
-            logger.warning(f'Could not store runs_2025 in session: {e}')
+            logger.warning(f'Could not store runs_2025_json in session: {e}')
         
         # Create table rows for 2025 runs only - display all runs
         logger.info("Creating table rows for display")
@@ -840,7 +862,8 @@ def get_stats_page():
         total_activities_count = len(activities)
         runs_2025_count = len(runs_2025)
         other_activities_count = total_activities_count - len([a for a in activities if a['type'] == 'Run'])
-        display_info = f'<p><em>Displaying all {runs_2025_count} runs from 2025</em></p>'
+        current_year = datetime.now().year
+        display_info = f'<p><em>Displaying all {runs_2025_count} runs from {current_year}</em></p>'
 
         # Pre-generate CSV data for JavaScript
         csv_data = 'Date,Activity,Distance (km),Time,Pace (min/km)\\n'
@@ -1344,7 +1367,8 @@ def poster():
 
     # Fallback: compute from fetched activities
     if runs_2025 is None:
-        runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith('2025')]
+        current_year = datetime.now().year
+        runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith(str(current_year))]
 
     if not runs_2025:
         logger.info('No 2025 runs found for poster')
@@ -1416,9 +1440,123 @@ def poster():
 
 @app.route('/generate-poster', methods=['POST'])
 def generate_poster():
-    """Endpoint for generating posters (currently disabled)."""
-    logger.warning("Poster generation functionality has been disabled")
-    return jsonify({'error': 'Poster generation functionality has been disabled.'}), 410  # 410 Gone
+    """Generate a poster using OpenAI's DALL-E with running stats."""
+    logger.info("Generating poster with OpenAI DALL-E")
+    
+    if 'access_token' not in session:
+        logger.warning("No access token in session, unauthorized")
+        return jsonify({'error': 'Not authenticated'}), 401
+        
+    try:
+        # Check if we should force refresh the activities
+        force_refresh = request.args.get('force_refresh', '').lower() == 'true'
+        
+        # Get activities data from session or fetch if not available
+        activities = None
+        if not force_refresh and 'activities' in session:
+            try:
+                activities = json.loads(session['activities'])
+                logger.info(f"Using {len(activities)} activities from session")
+            except Exception as e:
+                logger.warning(f"Error loading activities from session: {e}")
+        
+        # If not in session or force refresh, fetch from Strava
+        if not activities or force_refresh:
+            logger.info("Fetching activities from Strava API")
+            activities = get_all_activities()
+            if activities is not None:
+                # Store in session for future use (serialize to JSON)
+                session['activities'] = json.dumps(activities)
+                logger.info(f"Stored {len(activities)} activities in session")
+        
+        if not activities:
+            return jsonify({'error': 'No activities found'}), 404
+            
+        current_year = datetime.now().year
+        runs = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith(str(current_year))]
+        
+        if not runs:
+            return jsonify({'error': f'No runs found for {current_year}'}), 404
+            
+        # Calculate stats
+        total_distance = sum(run.get('distance', 0) for run in runs) / 1000  # Convert to km
+        total_time = sum(run.get('elapsed_time', 0) for run in runs) / 3600  # Convert to hours
+        avg_pace = sum(run.get('average_speed', 0) for run in runs) / len(runs) if runs else 0
+        avg_pace = 1000 / (avg_pace * 16.6667)  # Convert m/s to min/km
+        
+        # Get monthly stats
+        monthly_stats = {}
+        for run in runs:
+            try:
+                month = datetime.strptime(run['start_date'].split('T')[0], '%Y-%m-%d').strftime('%B')
+                monthly_stats[month] = monthly_stats.get(month, 0) + (run.get('distance', 0) / 1000)
+            except (KeyError, ValueError):
+                continue
+                
+        top_month = max(monthly_stats.items(), key=lambda x: x[1]) if monthly_stats else (None, 0)
+        
+        # Prepare prompt for DALL-E
+        prompt = f"""Create a motivational running poster for {current_year} with the following stats:
+        - Total Runs: {len(runs)}
+        - Total Distance: {total_distance:.1f} km
+        - Total Time: {total_time:.1f} hours
+        - Average Pace: {avg_pace:.2f} min/km
+        - Top Month: {top_month[0]} ({top_month[1]:.1f} km)
+        
+        Style: Modern, clean, and professional with a sports theme. Include running-related graphics.
+        """
+        
+        # Call OpenAI DALL-E API directly
+        try:
+            import requests
+            import json
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {os.environ.get("OPENAI_API_KEY")}'
+            }
+            
+            data = {
+                'model': 'dall-e-3',
+                'prompt': prompt,
+                'n': 1,
+                'size': '1024x1024',
+                'response_format': 'url'
+            }
+            
+            response = requests.post(
+                'https://api.openai.com/v1/images/generations',
+                headers=headers,
+                data=json.dumps(data)
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                image_url = result['data'][0]['url']
+                logger.info("Successfully generated poster with DALL-E")
+                return jsonify({
+                    'success': True,
+                    'image_url': image_url,
+                    'stats': {
+                        'total_runs': len(runs),
+                        'total_distance_km': round(total_distance, 1),
+                        'total_time_hours': round(total_time, 1),
+                        'avg_pace_min_km': round(avg_pace, 2),
+                        'top_month': top_month[0],
+                        'top_month_distance': round(top_month[1], 1) if top_month[0] else 0
+                    }
+                })
+            else:
+                logger.error(f"OpenAI API error: {response.text}")
+                return jsonify({'error': 'Failed to generate poster', 'details': response.text}), 500
+            
+        except Exception as e:
+            logger.error(f"Error calling DALL-E API: {str(e)}")
+            return jsonify({'error': 'Failed to generate poster with AI'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in generate_poster: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':
