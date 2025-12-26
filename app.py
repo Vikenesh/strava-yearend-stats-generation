@@ -382,38 +382,68 @@ def generate_grok_poster(activities, athlete_name):
         Return only the HTML+CSS, no markdown or code block formatting.
         """
         
+        # Use the recommended endpoint for stateful conversations
+        api_url = "https://api.x.ai"
         headers = {
             "Authorization": f"Bearer {XAI_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
         
+        # Initial message to start the conversation
         payload = {
-            "model": "grok-1",
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant that creates beautiful HTML+CSS posters for runners."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that creates beautiful HTML+CSS posters for runners."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
             ],
+            "model": "grok-1",
             "temperature": 0.7,
             "max_tokens": 2000
         }
         
-        response = requests.post(XAI_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
+        logger.info("Sending request to xAI Grok API...")
+        response = requests.post(
+            f"{api_url}/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
         
+        # Log response for debugging
+        logger.info(f"API Response Status: {response.status_code}")
+        
+        if response.status_code != 200:
+            logger.error(f"API Error: {response.status_code} - {response.text}")
+            return None
+            
         result = response.json()
-        poster_html = result['choices'][0]['message']['content']
         
-        # Clean up the response if it's wrapped in markdown code blocks
-        if '```html' in poster_html:
-            poster_html = poster_html.split('```html')[1].split('```')[0].strip()
-        elif '```' in poster_html:
-            poster_html = poster_html.split('```')[1].strip()
-        
-        return poster_html
-        
+        # Extract the generated content
+        if 'choices' in result and len(result['choices']) > 0:
+            poster_html = result['choices'][0]['message']['content']
+            
+            # Clean up the response if it's wrapped in markdown code blocks
+            if '```html' in poster_html:
+                poster_html = poster_html.split('```html')[1].split('```')[0].strip()
+            elif '```' in poster_html:
+                poster_html = poster_html.split('```')[1].strip()
+            
+            return poster_html
+        else:
+            logger.error(f"Unexpected API response format: {result}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request failed: {str(e)}")
     except Exception as e:
-        logger.error(f"Error generating xAI Grok poster: {str(e)}")
-        return None
+        logger.error(f"Error generating poster: {str(e)}", exc_info=True)
+    
+    return None
 
 @app.route('/logout')
 def logout():
