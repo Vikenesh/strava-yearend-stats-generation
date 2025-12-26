@@ -1376,28 +1376,52 @@ def poster():
         logger.warning("No access token in session, redirecting to login for poster")
         return redirect('/login')
 
-    activities = get_all_activities()
-    if activities is None:
-        logger.error("Failed to fetch activities for poster")
-        return redirect('/login')
-    # Prefer using runs saved in session by the stats page (raw CSV source)
-    runs_2025 = None
-    runs_json = session.get('runs_2025_json')
-    if runs_json:
+    current_year = datetime.now().year
+    logger.info(f"Generating poster for {current_year}")
+    
+    # Try to get activities from session first
+    activities = None
+    if 'activities' in session:
         try:
-            runs_2025 = json.loads(runs_json)
-            logger.info('Loaded runs_2025 from session for poster')
+            activities = json.loads(session['activities'])
+            logger.info(f'Loaded {len(activities)} activities from session')
         except Exception as e:
-            logger.warning(f'Could not parse runs_2025_json from session: {e}')
-
-    # Fallback: compute from fetched activities
-    if runs_2025 is None:
-        current_year = datetime.now().year
-        runs_2025 = [a for a in activities if a.get('type') == 'Run' and a.get('start_date', '').startswith(str(current_year))]
+            logger.warning(f'Could not parse activities from session: {e}')
+    
+    # If no activities in session or error, fetch from API
+    if not activities:
+        logger.info("No activities in session, fetching from Strava API")
+        activities = get_all_activities()
+        if activities is None:
+            logger.error("Failed to fetch activities for poster")
+            return '''
+            <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
+                <h2>Failed to fetch activities from Strava</h2>
+                <p>Please try again later or check your Strava connection.</p>
+                <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
+            </div>
+            '''
+        # Store in session for future use
+        session['activities'] = json.dumps(activities)
+    
+    # Filter runs for current year
+    runs_2025 = [
+        clean_activity_data(a) 
+        for a in activities 
+        if a.get('type') == 'Run' and 
+        str(current_year) in a.get('start_date', '')
+    ]
+    runs_2025 = [r for r in runs_2025 if r is not None]
 
     if not runs_2025:
-        logger.info('No 2025 runs found for poster')
-        return '<h1>No 2025 running activities found to render poster.</h1><p><a href="/">Back</a></p>'
+        logger.info(f'No {current_year} runs found for poster')
+        return f'''
+        <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
+            <h2>No {current_year} running activities found to generate poster.</h2>
+            <p>You need to have at least one run in {current_year} to generate a poster.</p>
+            <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
+        </div>
+        '''
 
     # Use existing analysis helper on 2025 runs
     try:
