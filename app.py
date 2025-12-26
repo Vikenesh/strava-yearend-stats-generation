@@ -12,7 +12,6 @@ from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, redirect, session, url_for, jsonify, send_file, Response
-import requests
 
 try:
     import pandas as pd
@@ -77,8 +76,6 @@ else:
 logger.info(f"OPENAI_API_KEY present: {'OPENAI_API_KEY' in os.environ}")
 REDIRECT_URI = 'https://strava-year-end-summary-production.up.railway.app/callback'
 
-# OpenAI API settings
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # Constants
 # --------
@@ -1394,219 +1391,10 @@ ${{csvData}}`;
         return f'<h1>Error</h1><p>{str(e)}</p><p><a href="/login">Try again</a></p>'
 
 
-@app.route('/poster')
-def poster():
-    """Serve the Rough.js poster template with injected Strava summary JSON."""
-    logger.info("Poster route accessed")
-    if 'access_token' not in session:
-        logger.warning("No access token in session, redirecting to login for poster")
-        return redirect('/login')
-
-    current_year = datetime.now().year
-    logger.info(f"Generating poster for {current_year}")
-    
-    # Always fetch fresh data instead of using session
-    logger.info("Fetching activities from Strava API")
-    activities = get_all_activities()
-    if activities is None:
-        logger.error("Failed to fetch activities for poster")
-        return '''
-        <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
-            <h2>Failed to fetch activities from Strava</h2>
-            <p>Please try again later or check your Strava connection.</p>
-            <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
-        </div>
-        '''
-    
-    # Clean and filter activities using the minimal data structure
-    runs_2025 = [
-        clean_activity_data(a) 
-        for a in activities 
-        if a.get('type') == 'Run' and 
-        str(current_year) in a.get('start_date', '')
-    ]
-    runs_2025 = [r for r in runs_2025 if r is not None]
-
-    if not runs_2025:
-        logger.info(f'No {current_year} runs found for poster')
-        return f'''
-        <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
-            <h2>No {current_year} running activities found to generate poster.</h2>
-            <p>You need to have at least one run in {current_year} to generate a poster.</p>
-            <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
-        </div>
-        '''
-
-    # Use existing analysis helper on 2025 runs
-    try:
-        summary = analyze_wrapped_stats(runs_2025)
-    except Exception as e:
-        logger.error(f"Error computing summary for poster: {e}")
-        summary = None
-
-    if not summary:
-        return '<h1>No running activities found to render poster.</h1><p><a href="/">Back</a></p>'
-
-    athlete = session.get('athlete_info', {})
-    athlete_name_display = str(athlete.get('firstname', 'Athlete') or 'Athlete') + ' ' + str(athlete.get('lastname', '') or '')
-
-    # Prepare poster data
-    monthly = {k: round(v['distance'], 2) if isinstance(v, dict) and 'distance' in v else round(float(v), 2) for k, v in summary.get('monthly_stats', {}).items()}
-    # If monthly values are nested dicts from earlier code path, handle both shapes
-    if not monthly:
-        monthly = {k: round(float(v), 2) for k, v in (summary.get('monthly_stats') or {}).items()}
-
-    # Top month
-    top_month = None
-    top_km = 0
-    try:
-        for k, v in monthly.items():
-            if v > top_km:
-                top_km = v
-                top_month = k
-    except Exception:
-        pass
-
-    trends = []
-    fav_day = summary.get('favorite_day')
-    if fav_day:
-        trends.append(f"Favorite day: {fav_day[0]} ({fav_day[1]} runs)")
-    if top_month:
-        trends.append(f"Peak month: {top_month} — {top_km} km")
-    trends.append(f"Average pace: {summary.get('avg_pace', 0)} min/km")
-
-    poster_data = {
-        'athlete': athlete_name_display.strip(),
-        'total_runs': summary.get('total_activities', 0),
-        'total_distance_km': summary.get('total_distance', 0),
-        'monthly': monthly,
-        'current_streak': summary.get('current_streak', 0),
-        'max_streak': summary.get('max_streak', 0),
-        'early_bird_count': summary.get('early_bird_count', 0),
-        'night_owl_count': summary.get('night_owl_count', 0),
-        'trends': trends
-    }
-
-    # Load template and inject JSON
-    try:
-        tpl_path = os.path.join(os.path.dirname(__file__), 'poster_template.html')
-        with open(tpl_path, 'r', encoding='utf-8') as f:
-            tpl = f.read()
-        injected = tpl.replace('__SAMPLE_DATA__', json.dumps(poster_data))
-        return injected
-    except Exception as e:
-        logger.error(f"Error reading poster template: {e}")
-        return f'<h1>Error</h1><p>Could not load poster template: {e}</p>'
 
 
 
 
-@app.route('/generate-poster', methods=['POST'])
-def generate_poster():
-    """Generate a poster using OpenAI's DALL-E with running stats."""
-    logger.info("Generating poster with OpenAI DALL-E")
-    
-    if 'access_token' not in session:
-        logger.warning("No access token in session, unauthorized")
-        return jsonify({'error': 'Not authenticated'}), 401
-        
-    try:
-        current_year = datetime.now().year
-        
-        # Always fetch fresh activities from Strava API for poster generation
-        logger.info("Fetching fresh activities from Strava API for poster generation")
-        activities = get_all_activities()
-        if not activities:
-            return jsonify({'error': 'No activities found'}), 404
-        
-        # Process and filter runs for current year
-        runs = [clean_activity_data(a) for a in activities 
-               if a.get('type') == 'Run' and 
-               str(current_year) in a.get('start_date', '')]
-        runs = [r for r in runs if r is not None]
-        
-        if not runs:
-            return jsonify({'error': f'No runs found for {current_year}'}), 404
-            
-        # Calculate stats
-        total_distance = sum(run.get('distance', 0) for run in runs) / 1000  # Convert to km
-        total_time = sum(run.get('elapsed_time', 0) for run in runs) / 3600  # Convert to hours
-        avg_pace = sum(run.get('average_speed', 0) for run in runs) / len(runs) if runs else 0
-        avg_pace = 1000 / (avg_pace * 16.6667)  # Convert m/s to min/km
-        
-        # Get monthly stats
-        monthly_stats = {}
-        for run in runs:
-            try:
-                month = datetime.strptime(run['start_date'].split('T')[0], '%Y-%m-%d').strftime('%B')
-                monthly_stats[month] = monthly_stats.get(month, 0) + (run.get('distance', 0) / 1000)
-            except (KeyError, ValueError):
-                continue
-                
-        top_month = max(monthly_stats.items(), key=lambda x: x[1]) if monthly_stats else (None, 0)
-        
-        # Prepare prompt for DALL-E
-        prompt = f"""Create a motivational running poster for {current_year} with the following stats:
-        - Total Runs: {len(runs)}
-        - Total Distance: {total_distance:.1f} km
-        - Total Time: {total_time:.1f} hours
-        - Average Pace: {avg_pace:.2f} min/km
-        - Top Month: {top_month[0]} ({top_month[1]:.1f} km)
-        
-        Style: Modern, clean, and professional with a sports theme. Include running-related graphics.
-        """
-        
-        # Call OpenAI DALL-E API directly
-        try:
-            import requests
-            
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {os.environ.get("OPENAI_API_KEY")}'
-            }
-            
-            data = {
-                'model': 'dall-e-3',
-                'prompt': prompt,
-                'n': 1,
-                'size': '1024x1024',
-                'response_format': 'url'
-            }
-            
-            response = requests.post(
-                'https://api.openai.com/v1/images/generations',
-                headers=headers,
-                json=data,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                image_url = result['data'][0]['url']
-                logger.info("Successfully generated poster with DALL-E")
-                return jsonify({
-                    'success': True,
-                    'image_url': image_url,
-                    'stats': {
-                        'total_runs': len(runs),
-                        'total_distance_km': round(total_distance, 1),
-                        'total_time_hours': round(total_time, 1),
-                        'avg_pace_min_km': round(avg_pace, 2),
-                        'top_month': top_month[0],
-                        'top_month_distance': round(top_month[1], 1) if top_month[0] else 0
-                    }
-                })
-            else:
-                logger.error(f"OpenAI API error: {response.text}")
-                return jsonify({'error': 'Failed to generate poster', 'details': response.text}), 500
-            
-        except Exception as e:
-            logger.error(f"Error calling DALL-E API: {str(e)}")
-            return jsonify({'error': 'Failed to generate poster with AI'}), 500
-            
-    except Exception as e:
-        logger.error(f"Error in generate_poster: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':
