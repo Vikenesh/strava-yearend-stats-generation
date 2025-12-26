@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ athlete_name }}'s {{ year }} Running Summary</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 30px 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        h1 {
+            font-size: 2.2rem;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            margin-bottom: 20px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #4a4a4a;
+            margin: 10px 0;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 1rem;
+        }
+        
+        .btn-generate {
+            display: block;
+            width: 80%;
+            max-width: 300px;
+            margin: 30px auto;
+            padding: 15px 30px;
+            background: #fc4c02;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            text-decoration: none;
+            box-shadow: 0 4px 15px rgba(252, 76, 2, 0.3);
+        }
+        
+        .btn-generate:hover {
+            background: #e64500;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(252, 76, 2, 0.4);
+        }
+        
+        .btn-generate i {
+            margin-right: 8px;
+        }
+        
+        .poster-container {
+            display: none;
+            margin: 30px auto;
+            max-width: 90%;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #fc4c02;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error-message {
+            color: #e74c3c;
+            text-align: center;
+            margin: 15px 0;
+            display: none;
+        }
+        
+        .logout-btn {
+            display: block;
+            text-align: center;
+            margin: 30px auto 20px;
+            color: #666;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+        
+        .logout-btn:hover {
+            color: #333;
+            text-decoration: underline;
+        }
+        
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+                padding: 20px 15px;
+            }
+            
+            header {
+                padding: 20px 15px;
+            }
+            
+            h1 {
+                font-size: 1.8rem;
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{{ athlete_name }}'s {{ year }} Running Summary</h1>
+            <div class="subtitle">Your year in running at a glance</div>
+        </header>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">🏃</div>
+                <div class="stat-value">{{ total_runs }}</div>
+                <div class="stat-label">Total Runs</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">📏</div>
+                <div class="stat-value">{{ "%.1f"|format(total_distance) }} km</div>
+                <div class="stat-label">Total Distance</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">⏱️</div>
+                <div class="stat-value">{{ "%.1f"|format(total_time) }} hrs</div>
+                <div class="stat-label">Total Time</div>
+            </div>
+        </div>
+        
+        <button id="generatePosterBtn" class="btn-generate">
+            <i class="fas fa-magic"></i> Generate AI Poster
+        </button>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Generating your personalized running poster...</p>
+        </div>
+        
+        <div id="errorMessage" class="error-message">
+            An error occurred while generating your poster. Please try again.
+        </div>
+        
+        <div id="posterContainer" class="poster-container">
+            <!-- Poster will be inserted here -->
+        </div>
+        
+        <a href="/logout" class="logout-btn">
+            <i class="fas fa-sign-out-alt"></i> Logout
+        </a>
+    </div>
+    
+    <script>
+        document.getElementById('generatePosterBtn').addEventListener('click', async function() {
+            const btn = this;
+            const loading = document.getElementById('loading');
+            const errorMessage = document.getElementById('errorMessage');
+            const posterContainer = document.getElementById('posterContainer');
+            
+            // Show loading, hide error and any previous poster
+            btn.disabled = true;
+            loading.style.display = 'block';
+            errorMessage.style.display = 'none';
+            posterContainer.style.display = 'none';
+            
+            try {
+                const response = await fetch('/generate-grok-poster', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'same-origin'
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    // Display the generated poster
+                    posterContainer.innerHTML = data.poster_html;
+                    posterContainer.style.display = 'block';
+                    
+                    // Scroll to the poster
+                    posterContainer.scrollIntoView({ behavior: 'smooth' });
+                } else {
+                    throw new Error(data.error || 'Failed to generate poster');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                errorMessage.textContent = `Error: ${error.message}`;
+                errorMessage.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                loading.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>

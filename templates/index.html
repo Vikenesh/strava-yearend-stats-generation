@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Year-End Running Summary for Strava</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: #4a4a4a;
+            margin-bottom: 20px;
+            font-size: 2.2rem;
+        }
+        
+        p {
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        
+        .btn-strava {
+            background-color: #fc4c02;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            border-radius: 50px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(252, 76, 2, 0.3);
+        }
+        
+        .btn-strava:hover {
+            background-color: #e64500;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(252, 76, 2, 0.4);
+        }
+        
+        .btn-strava i {
+            margin-right: 10px;
+            font-size: 1.3rem;
+        }
+        
+        .logo {
+            width: 120px;
+            margin-bottom: 25px;
+        }
+        
+        .features {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+            margin: 30px 0;
+        }
+        
+        .feature {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            color: #555;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+        
+        footer {
+            margin-top: 40px;
+            font-size: 0.85rem;
+            color: #888;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/Strava_Logo.svg/2560px-Strava_Logo.svg.png" alt="Strava Logo" class="logo">
+        <h1>Your Year in Running</h1>
+        <p>Connect your Strava account to see your personalized year-end running statistics and generate a beautiful summary of your achievements.</p>
+        
+        <div class="features">
+            <div class="feature">📊 Detailed Statistics</div>
+            <div class="feature">🏆 Achievements</div>
+            <div class="feature">📅 Year in Review</div>
+            <div class="feature">🖼️ Shareable Summary</div>
+        </div>
+        
+        <a href="{{ auth_url }}" class="btn-strava">
+            <i class="fab fa-strava"></i> Connect with Strava
+        </a>
+        
+        <footer>
+            <p>We only request read access to your Strava data. Your privacy is important to us.</p>
+        </footer>
+    </div>
+</body>
+</html>
