@@ -38,21 +38,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def clean_activity_data(activity):
-    """Extract and clean only the necessary fields from an activity."""
+    """Extract and clean only the minimal necessary fields from an activity.
+    
+    Returns:
+        dict: A minimal representation of the activity with only essential fields.
+        None: If the input is invalid.
+    """
     if not isinstance(activity, dict):
         return None
         
+    # Only keep essential fields and use minimal keys
     return {
-        'id': activity.get('id'),
-        'type': activity.get('type'),
-        'start_date': activity.get('start_date', ''),
-        'distance': float(activity.get('distance', 0)),
-        'moving_time': int(activity.get('moving_time', 0)),
-        'elapsed_time': int(activity.get('elapsed_time', 0)),
-        'average_speed': float(activity.get('average_speed', 0)),
-        'name': str(activity.get('name', '')),
-        'max_speed': float(activity.get('max_speed', 0)),
-        'total_elevation_gain': float(activity.get('total_elevation_gain', 0))
+        'i': activity.get('id'),  # id
+        't': activity.get('type'),  # type
+        'd': activity.get('start_date', '')[:10],  # date (YYYY-MM-DD)
+        'm': float(activity.get('distance', 0)),  # distance in meters
+        's': float(activity.get('average_speed', 0)),  # speed in m/s
+        'e': int(activity.get('elapsed_time', 0))  # elapsed time in seconds
     }
 
 # Initialize Flask app
@@ -1379,32 +1381,20 @@ def poster():
     current_year = datetime.now().year
     logger.info(f"Generating poster for {current_year}")
     
-    # Try to get activities from session first
-    activities = None
-    if 'activities' in session:
-        try:
-            activities = json.loads(session['activities'])
-            logger.info(f'Loaded {len(activities)} activities from session')
-        except Exception as e:
-            logger.warning(f'Could not parse activities from session: {e}')
+    # Always fetch fresh data instead of using session
+    logger.info("Fetching activities from Strava API")
+    activities = get_all_activities()
+    if activities is None:
+        logger.error("Failed to fetch activities for poster")
+        return '''
+        <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
+            <h2>Failed to fetch activities from Strava</h2>
+            <p>Please try again later or check your Strava connection.</p>
+            <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
+        </div>
+        '''
     
-    # If no activities in session or error, fetch from API
-    if not activities:
-        logger.info("No activities in session, fetching from Strava API")
-        activities = get_all_activities()
-        if activities is None:
-            logger.error("Failed to fetch activities for poster")
-            return '''
-            <div style="text-align: center; margin-top: 50px; font-family: Arial, sans-serif;">
-                <h2>Failed to fetch activities from Strava</h2>
-                <p>Please try again later or check your Strava connection.</p>
-                <p><a href="/" style="color: #007bff; text-decoration: none;">&larr; Back to Dashboard</a></p>
-            </div>
-            '''
-        # Store in session for future use
-        session['activities'] = json.dumps(activities)
-    
-    # Filter runs for current year
+    # Clean and filter activities using the minimal data structure
     runs_2025 = [
         clean_activity_data(a) 
         for a in activities 
