@@ -122,29 +122,42 @@ def analyze_wrapped_stats(activities):
         logger.info("No runs found")
         return None
     
-    # Convert all dates to IST
+    # Convert all dates to IST and add metadata
     ist_runs = []
     for run in runs:
-        ist_dt = utc_to_ist(run['start_date'])
-        ist_run = run.copy()
-        ist_run['ist_date'] = ist_dt
-        ist_runs.append(ist_run)
+        try:
+            # Convert date string to datetime object
+            run_date = datetime.strptime(run['d'], '%Y-%m-%d')
+            ist_run = {
+                'ist_date': run_date,
+                'distance': float(run.get('m', 0)),  # 'm' is distance in meters
+                'elapsed_time': int(run.get('e', 0)),  # 'e' is elapsed time in seconds
+                'speed': float(run.get('s', 0))  # 's' is speed in m/s
+            }
+            ist_runs.append(ist_run)
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Skipping run due to invalid data: {e}")
+            continue
+    
+    if not ist_runs:
+        logger.error("No valid runs found after processing")
+        return None
     
     # Basic stats
     total_distance = sum(run['distance'] for run in ist_runs) / 1000  # km
-    total_time = sum(run['moving_time'] for run in ist_runs)  # seconds
+    total_time = sum(run['elapsed_time'] for run in ist_runs)  # seconds
     total_activities = len(ist_runs)
     
     # Monthly breakdown
     monthly_stats = defaultdict(lambda: {'distance': 0, 'count': 0, 'time': 0})
     for run in ist_runs:
         month_key = run['ist_date'].strftime('%Y-%m')
-        monthly_stats[month_key]['distance'] += run['distance'] / 1000
+        monthly_stats[month_key]['distance'] += run['distance'] / 1000  # km
         monthly_stats[month_key]['count'] += 1
-        monthly_stats[month_key]['time'] += run['moving_time']
+        monthly_stats[month_key]['time'] += run['elapsed_time']
     
     # Fastest/Longest activities
-    fastest_run = min(ist_runs, key=lambda x: x['moving_time'] / (x['distance'] / 1000) if x['distance'] > 0 else float('inf'))
+    fastest_run = min(ist_runs, key=lambda x: x['elapsed_time'] / (x['distance'] / 1000) if x['distance'] > 0 else float('inf'))
     longest_run = max(ist_runs, key=lambda x: x['distance'])
     
     # Time patterns
