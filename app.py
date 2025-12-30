@@ -323,7 +323,21 @@ def analyze_with_chatgpt(activities, athlete_name):
         # Prepare recent runs for analysis
         recent_runs = sorted(runs, key=lambda x: x['start_date'], reverse=True)[:10]
         
-        # Create prompt
+        # Format recent runs separately to avoid f-string issues
+        recent_runs_formatted = []
+        for r in recent_runs:
+            run_date = r['start_date'][:10]
+            run_name = r['name']
+            run_distance = r['distance']/1000
+            run_time = r['moving_time']/60
+            run_pace = run_time / run_distance if run_distance > 0 else 0
+            
+            recent_runs_formatted.append(
+                f"- {run_date}: {run_name} - {run_distance:.1f}km, "
+                f"{run_time:.0f}min, {run_pace:.2f} min/km"
+            )
+        
+        # Create prompt with safe string formatting
         prompt = f"""
         You are an experienced running coach analyzing {athlete_name}'s {current_year} running data.
         
@@ -335,12 +349,7 @@ def analyze_with_chatgpt(activities, athlete_name):
         - Longest Run: {longest_run['name']} - {longest_run['distance']/1000:.1f} km
         
         Recent Runs (last 10):
-        {"\n".join([
-            f"- {r['start_date'][:10]}: {r['name']} - {r['distance']/1000:.1f}km, "
-            f"{(r['moving_time']/60):.0f}min, "
-            f"{(r['moving_time']/60)/(r['distance']/1000):.2f} min/km" 
-            for r in recent_runs
-        ])}
+        {recent_runs_text}
         
         Please provide a detailed analysis including:
         1. Performance trends and patterns
@@ -352,7 +361,17 @@ def analyze_with_chatgpt(activities, athlete_name):
         
         Be encouraging and professional, focusing on both strengths and areas for growth.
         Format the response in markdown with appropriate headings and bullet points.
-        """
+        """.format(
+            athlete_name=athlete_name,
+            current_year=current_year,
+            len_runs=len(runs),
+            total_distance=total_distance,
+            avg_distance=avg_distance,
+            avg_pace=avg_pace,
+            longest_run_name=longest_run['name'],
+            longest_run_distance=longest_run['distance']/1000,
+            recent_runs_text='\n'.join(recent_runs_formatted)
+        )
         
         # Call OpenAI API
         response = client.chat.completions.create(
