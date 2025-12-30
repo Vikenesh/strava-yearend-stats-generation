@@ -288,77 +288,95 @@ def get_all_activities():
     return all_activities
 
 def analyze_with_chatgpt(activities, athlete_name):
-    """Analyze activities using ChatGPT API"""
+    """Analyze activities using OpenAI's ChatGPT API with the Python client
+    
+    Args:
+        activities (list): List of activity dictionaries from Strava
+        athlete_name (str): Name of the athlete
+        
+    Returns:
+        str: Analysis from ChatGPT or error message
+    """
     logger.info(f"analyze_with_chatgpt called for {len(activities)} activities")
+    
     try:
-        # Filter for 2025 runs only
-        runs_2025 = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith('2025')]
-        logger.info(f"Processing {len(runs_2025)} runs from 2025")
+        # Initialize OpenAI client
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
         
-        # Prepare data for ChatGPT
-        summary = {
-            'athlete': athlete_name,
-            'total_runs': len(runs_2025),
-            'total_distance': round(sum(a['distance'] / 1000 for a in runs_2025), 2),
-            'recent_runs': []
-        }
+        # Filter for current year runs only
+        current_year = datetime.datetime.now().year
+        runs = [a for a in activities if a['type'] == 'Run' and a['start_date'].startswith(str(current_year))]
+        logger.info(f"Processing {len(runs)} runs from {current_year}")
         
-        # Add recent 10 runs for detailed analysis
-        for run in runs_2025[:10]:
-            summary['recent_runs'].append({
-                'date': run['start_date'][:10],
-                'name': run['name'],
-                'distance_km': round(run['distance'] / 1000, 2),
-                'time_minutes': run['moving_time'] // 60,
-                'pace_min_per_km': round((run['moving_time'] / 60) / (run['distance'] / 1000), 2)
-            })
+        if not runs:
+            return "No running activities found for analysis."
         
-        # Create prompt for ChatGPT
+        # Calculate statistics
+        total_distance = sum(a['distance'] for a in runs) / 1000  # in km
+        avg_distance = total_distance / len(runs)
+        avg_pace = sum((a['moving_time'] / 60) / (a['distance'] / 1000) for a in runs) / len(runs)
+        
+        # Get longest run
+        longest_run = max(runs, key=lambda x: x['distance'])
+        
+        # Prepare recent runs for analysis
+        recent_runs = sorted(runs, key=lambda x: x['start_date'], reverse=True)[:10]
+        
+        # Create prompt
         prompt = f"""
-        Analyze this 2025 running data for {athlete_name}:
+        You are an experienced running coach analyzing {athlete_name}'s {current_year} running data.
         
-        Summary: {json.dumps(summary, indent=2)}
+        Summary Statistics:
+        - Total Runs: {len(runs)}
+        - Total Distance: {total_distance:.1f} km
+        - Average Distance: {avg_distance:.1f} km/run
+        - Average Pace: {avg_pace:.2f} min/km
+        - Longest Run: {longest_run['name']} - {longest_run['distance']/1000:.1f} km
         
-        Please provide:
-        1. Performance insights and trends
-        2. Training recommendations
-        3. Goal setting suggestions
-        4. Notable achievements
-        5. Areas for improvement
+        Recent Runs (last 10):
+        {"\n".join([
+            f"- {r['start_date'][:10]}: {r['name']} - {r['distance']/1000:.1f}km, "
+            f"{(r['moving_time']/60):.0f}min, "
+            f"{(r['moving_time']/60)/(r['distance']/1000):.2f} min/km" 
+            for r in recent_runs
+        ])}
         
-        Format the response in a clear, encouraging way suitable for an athlete.
+        Please provide a detailed analysis including:
+        1. Performance trends and patterns
+        2. Training load assessment
+        3. Specific training recommendations
+        4. Goal setting suggestions
+        5. Notable achievements and areas for improvement
+        6. Any potential injury risks based on the training pattern
+        
+        Be encouraging and professional, focusing on both strengths and areas for growth.
+        Format the response in markdown with appropriate headings and bullet points.
         """
         
-        try:
-            headers = {
-                'Authorization': f'Bearer {OPENAI_API_KEY}',
-                'Content-Type': 'application/json'
-            }
-            
-            data = {
-                'model': 'gpt-3.5-turbo',
-                'messages': [
-                    {'role': 'system', 'content': 'You are a helpful running coach and data analyst.'},
-                    {'role': 'user', 'content': prompt}
-                ],
-                'max_tokens': 1000,
-                'temperature': 0.7
-            }
-            
-            response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
-            logger.info(f"OpenAI API response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.json()['choices'][0]['message']['content']
-                logger.info("Successfully received analysis from OpenAI")
-                return result
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                return f"OpenAI API Error: {response.status_code} - {response.text}"
-                
-        except Exception as e:
-            logger.error(f"Error calling OpenAI API: {str(e)}")
-            return f"Error calling OpenAI API: {str(e)}"
+        # Call OpenAI API
+        response = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": "You are an expert running coach with deep knowledge of training science, injury prevention, and performance optimization."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1500,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0
+        )
+        
+        analysis = response.choices[0].message.content
+        logger.info("Successfully received analysis from OpenAI")
+        return analysis
+        
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error: {str(e)}")
+        return f"OpenAI API Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
+        return f"Error in analysis: {str(e)}"
             
     except Exception as e:
         logger.error(f"Error in analyze_with_chatgpt: {str(e)}")
