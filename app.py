@@ -3,6 +3,7 @@ Strava Year-End Run Summary Application
 
 This application provides a summary of Strava running activities with visualizations.
 """
+import openai
 import json
 import logging
 import os
